@@ -1,0 +1,13 @@
+export DROBO="fs"
+export TOOLCHAIN=~/xtools/toolchain/${DROBO}
+export ARCH="armv5te"
+export PATH="${TOOLCHAIN}/bin:~/bin:$PATH"
+export CFLAGS="-march=${ARCH} -mtune=arm926ej-s"
+export CXXFLAGS="${CFLAGS}"
+export CC="${TOOLCHAIN}/bin/arm-none-linux-gnueabi-gcc"
+export CXX="${TOOLCHAIN}/bin/arm-none-linux-gnueabi-g++"
+export AR="${TOOLCHAIN}/bin/arm-none-linux-gnueabi-ar"
+export AS="${TOOLCHAIN}/bin/arm-none-linux-gnueabi-as"
+export RANLIB="${TOOLCHAIN}/bin/arm-none-linux-gnueabi-ranlib"
+export STRIP="${TOOLCHAIN}/bin/arm-none-linux-gnueabi-strip"
+export DROBOAPPS="/mnt/DroboFS/Shares/DroboApps"

@@ -1,0 +1,4 @@
+#!/bin/bash
+
+make -C /home/gprakash/Develop/DroboPro/linux_play/DB/linux-mv78xx0-1-0-3-dual M=arch/arm/mach-feroceon/LSP/shared_mem modules CROSS_COMPILE=arm-none-linux-gnueabi-
+
