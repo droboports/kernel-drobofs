@@ -1,7 +1,9 @@
 kernel-drobofs
 ==============
 
-Kernel source code for the DroboFS
+Kernel source code for the DroboFS.
+
+Obtained from [here](http://support.drobo.com/app/answers/detail/a_id/434).
 
 ## How to compile modules
 
