@@ -9,6 +9,11 @@ Obtained from [here](http://support.drobo.com/app/answers/detail/a_id/434).
 
 First make sure that you have a [working cross-compiling VM](https://github.com/droboports/droboports.github.io/wiki/Setting-up-a-VM).
 
+Then, make sure that `libncurses5-dev` is installed:
+```
+sudo apt-get install libncurses5-dev
+```
+
 Log in the VM, pick a temporary folder (e.g., `~/build`), and then do:
 
 ```
