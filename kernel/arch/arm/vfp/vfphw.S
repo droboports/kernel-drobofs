@@ -74,14 +74,14 @@ vfp_support_entry:
 
 	VFPFMRX	r1, FPEXC		@ Is the VFP enabled?
 	DBGSTR1	"fpexc %08x", r1
-	tst	r1, #FPEXC_ENABLE
+	tst	r1, #FPEXC_EN
 	bne	look_for_VFP_exceptions	@ VFP is already enabled
 
 	DBGSTR1 "enable %x", r10
 	ldr	r3, last_VFP_context_address
-	orr	r1, r1, #FPEXC_ENABLE	@ user FPEXC has the enable bit set
+	orr	r1, r1, #FPEXC_EN	@ user FPEXC has the enable bit set
 	ldr	r4, [r3, r11, lsl #2]	@ last_VFP_context pointer
-	bic	r5, r1, #FPEXC_EXCEPTION @ make sure exceptions are disabled
+	bic	r5, r1, #FPEXC_EX	@ make sure exceptions are disabled
 	cmp	r4, r10
 	beq	check_for_exception	@ we are returning to the same
 					@ process, so the registers are
@@ -124,7 +124,7 @@ no_old_VFP_process:
 	VFPFMXR	FPSCR, r5		@ restore status
 
 check_for_exception:
-	tst	r1, #FPEXC_EXCEPTION
+	tst	r1, #FPEXC_EX
 	bne	process_exception	@ might as well handle the pending
 					@ exception before retrying branch
 					@ out before setting an FPEXC that
@@ -136,10 +136,10 @@ check_for_exception:
 
 
 look_for_VFP_exceptions:
-	tst	r1, #FPEXC_EXCEPTION
+	tst	r1, #FPEXC_EX
 	bne	process_exception
 	VFPFMRX	r5, FPSCR
-	tst	r5, #FPSCR_IXE		@ IXE doesn't set FPEXC_EXCEPTION !
+	tst	r5, #FPSCR_IXE		@ IXE doesn't set FPEXC_EX !
 	bne	process_exception
 
 	@ Fall into hand on to next handler - appropriate coproc instr
@@ -150,10 +150,18 @@ look_for_VFP_exceptions:
 
 process_exception:
 	DBGSTR	"bounce"
+
+        @ In Orion2, when a floating point exception is detected, the core 
+        @ raises an undefined exception and sets the r14_undef or the link 
+        @ register to the next instruction after the bouncing instruction. 
+        @ Hence we don't need to decrement it by 4 in the support code, whereas,
+        @ this is not how it happens in the ARM architecture.
+#ifndef CONFIG_ARCH_FEROCEON
 	sub	r2, r2, #4
 	str	r2, [sp, #S_PC]		@ retry the instruction on exit from
 					@ the imprecise exception handling in
 					@ the support code
+#endif
 	mov	r2, sp			@ nothing stacked - regdump is at TOS
 	mov	lr, r9			@ setup for a return to the user code.
 
@@ -214,7 +222,11 @@ vfp_get_double:
 	add	pc, pc, r0, lsl #3
 	mov	r0, r0
 	.irp	dr,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+ #ifdef __ARMEB__
+ 	fmrrd	r1, r0, d\dr
+ #else
 	fmrrd	r0, r1, d\dr
+ #endif
 	mov	pc, lr
 	.endr
 
@@ -228,6 +240,10 @@ vfp_put_double:
 	add	pc, pc, r2, lsl #3
 	mov	r0, r0
 	.irp	dr,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+ #ifdef __ARMEB__
+ 	fmdrr	d\dr, r1, r0
+ #else
 	fmdrr	d\dr, r0, r1
+ #endif
 	mov	pc, lr
 	.endr

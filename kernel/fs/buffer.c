@@ -2599,14 +2599,14 @@ int submit_bh(int rw, struct buffer_head * bh)
 	BUG_ON(!buffer_mapped(bh));
 	BUG_ON(!bh->b_end_io);
 
-	if (buffer_ordered(bh) && (rw == WRITE))
-		rw = WRITE_BARRIER;
+	if (buffer_ordered(bh) && (rw & WRITE))
+		rw |= WRITE_BARRIER;
 
 	/*
 	 * Only clear out a write error when rewriting, should this
 	 * include WRITE_SYNC as well?
 	 */
-	if (test_set_buffer_req(bh) && (rw == WRITE || rw == WRITE_BARRIER))
+	if (test_set_buffer_req(bh) && (rw & WRITE))
 		clear_buffer_write_io_error(bh);
 
 	/*

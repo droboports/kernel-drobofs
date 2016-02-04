@@ -945,6 +945,19 @@ struct page *follow_page(struct vm_area_struct *vma, unsigned long address,
 		goto unlock;
 	if ((flags & FOLL_WRITE) && !pte_write(pte))
 		goto unlock;
+
+	/* x86 has an 'accessed' bit in the page table, which the OS uses to do page aging
+	 * when the page is accessed, the processor sets that bit to 1
+	 * that way, the OS can see which pages are being accessed
+	 * ARM doesn't have an accessed bit (well, there is one, but it is only defined in ARMv7 and later)
+	 * so ARM emulates it by marking the page invalid if pte_young() is false
+	 * so that an access generates a page fault
+	 * check proc-arm926.S and look for L_PTE_YOUNG
+	 * if L_PTE_PRESENT and L_PTE_YOUNG are not both set, the HW pte is set to zero.
+	 * in case we have L2 we will get page fault for flushing this pages!!!! */
+	if (!pte_young(pte) && (flags & FOLL_PTE_EXIST))
+		goto unlock;
+
 	page = vm_normal_page(vma, address, pte);
 	if (unlikely(!page))
 		goto unlock;
@@ -2183,6 +2196,9 @@ static int do_swap_page(struct mm_struct *mm, struct vm_area_struct *vma,
 	}
 
 	flush_icache_page(vma, page);
+	/* We also need this ... rjs@DRI*/
+	flush_kernel_dcache_page(page);
+	flush_anon_page(vma, page, address);
 	set_pte_at(mm, address, page_table, pte);
 	page_add_anon_rmap(page, vma, address);
 
@@ -2318,8 +2334,12 @@ retry:
 	 */
 
 	/* no page was available -- either SIGBUS, OOM or REFAULT */
-	if (unlikely(new_page == NOPAGE_SIGBUS))
+	if (unlikely(new_page == NOPAGE_SIGBUS)) {
+		printk(KERN_INFO "%s: new_page == NOPAGE_SIGBUS\n", __func__);
+		printk(KERN_INFO "%s: nopage: %p\n", __func__,
+			vma->vm_ops->nopage);
 		return VM_FAULT_SIGBUS;
+	}
 	else if (unlikely(new_page == NOPAGE_OOM))
 		return VM_FAULT_OOM;
 	else if (unlikely(new_page == NOPAGE_REFAULT))
@@ -2350,6 +2370,9 @@ retry:
 			    vma->vm_ops->page_mkwrite(vma, new_page) < 0
 			    ) {
 				page_cache_release(new_page);
+				printk(KERN_INFO 
+					"%s: page_mkwrite returned < 0\n",
+					__func__);
 				return VM_FAULT_SIGBUS;
 			}
 		}
@@ -2503,8 +2526,10 @@ static int do_file_page(struct mm_struct *mm, struct vm_area_struct *vma,
 					vma->vm_page_prot, pgoff, 0);
 	if (err == -ENOMEM)
 		return VM_FAULT_OOM;
-	if (err)
+	if (err) {
+		printk(KERN_INFO "%s: Error is: %d\n", __func__, err);
 		return VM_FAULT_SIGBUS;
+	}
 	return VM_FAULT_MAJOR;
 }
 

@@ -18,6 +18,10 @@ GZFLAGS		:=-9
 # Explicitly specifiy 32-bit ARM ISA since toolchain default can be -mthumb:
 CFLAGS		+=$(call cc-option,-marm,)
 
+ifeq ($(CONFIG_REORDER),y)                                    
+CFLAGS          += -ffunction-sections                        
+endif  
+
 # Do not use arch/arm/defconfig - it's always outdated.
 # Select a platform tht is kept up-to-date
 KBUILD_DEFCONFIG := versatile_defconfig
@@ -54,7 +58,12 @@ arch-$(CONFIG_CPU_32v6)		:=-D__LINUX_ARM_ARCH__=6 $(call cc-option,-march=armv6,
 ifeq ($(CONFIG_CPU_32v6),y)
 arch-$(CONFIG_CPU_32v6K)	:=-D__LINUX_ARM_ARCH__=6 $(call cc-option,-march=armv6k,-march=armv5t -Wa$(comma)-march=armv6k)
 endif
-arch-$(CONFIG_CPU_32v5)		:=-D__LINUX_ARM_ARCH__=5 $(call cc-option,-march=armv5te,-march=armv4t)
+ifneq ($(CONFIG_USE_DSP),y)
+arch-$(CONFIG_CPU_32v5)         :=-D__LINUX_ARM_ARCH__=5 $(call cc-option,-march=armv5t)
+else
+arch-$(CONFIG_CPU_32v5)		    :=-D__LINUX_ARM_ARCH__=5 $(call cc-option,-march=armv5te,-march=armv4t)
+endif
+
 arch-$(CONFIG_CPU_32v4T)	:=-D__LINUX_ARM_ARCH__=4 -march=armv4t
 arch-$(CONFIG_CPU_32v4)		:=-D__LINUX_ARM_ARCH__=4 -march=armv4
 arch-$(CONFIG_CPU_32v3)		:=-D__LINUX_ARM_ARCH__=3 -march=armv3
@@ -71,7 +80,12 @@ tune-$(CONFIG_CPU_ARM946T)	:=$(call cc-option,-mtune=arm9e,-mtune=arm9tdmi)
 tune-$(CONFIG_CPU_ARM920T)	:=-mtune=arm9tdmi
 tune-$(CONFIG_CPU_ARM922T)	:=-mtune=arm9tdmi
 tune-$(CONFIG_CPU_ARM925T)	:=-mtune=arm9tdmi
+#we observed better performance using xscale tuning 
+ifeq ($(CONFIG_ARCH_FEROCEON),y)
+tune-$(CONFIG_CPU_ARM926T)	:=$(call cc-option,-mtune=marvell-f,-mtune=xscale)
+else
 tune-$(CONFIG_CPU_ARM926T)	:=-mtune=arm9tdmi
+endif
 tune-$(CONFIG_CPU_SA110)	:=-mtune=strongarm110
 tune-$(CONFIG_CPU_SA1100)	:=-mtune=strongarm1100
 tune-$(CONFIG_CPU_XSCALE)	:=$(call cc-option,-mtune=xscale,-mtune=strongarm110) -Wa,-mcpu=xscale
@@ -92,7 +106,11 @@ CHECKFLAGS	+= -D__arm__
 
 #Default value
 head-y		:= arch/arm/kernel/head$(MMUEXT).o arch/arm/kernel/init_task.o
+ifeq ($(CONFIG_MV78200),y)
+textofs-y	:= 0x08008000
+else
 textofs-y	:= 0x00008000
+endif
 
  machine-$(CONFIG_ARCH_RPC)	   := rpc
  machine-$(CONFIG_ARCH_EBSA110)	   := ebsa110
@@ -108,35 +126,38 @@ ifeq ($(CONFIG_ARCH_SA1100),y)
 # SA1111 DMA bug: we don't want the kernel to live in precious DMA-able memory
  textofs-$(CONFIG_SA1111)	   := 0x00208000
 endif
- machine-$(CONFIG_ARCH_PXA)	   := pxa
- machine-$(CONFIG_ARCH_L7200)	   := l7200
- machine-$(CONFIG_ARCH_INTEGRATOR) := integrator
- textofs-$(CONFIG_ARCH_CLPS711X)   := 0x00028000
- machine-$(CONFIG_ARCH_CLPS711X)   := clps711x
- machine-$(CONFIG_ARCH_IOP32X)	   := iop32x
- machine-$(CONFIG_ARCH_IOP33X)	   := iop33x
- machine-$(CONFIG_ARCH_IOP13XX)	   := iop13xx
- machine-$(CONFIG_ARCH_IXP4XX)	   := ixp4xx
- machine-$(CONFIG_ARCH_IXP2000)    := ixp2000
- machine-$(CONFIG_ARCH_IXP23XX)    := ixp23xx
- machine-$(CONFIG_ARCH_OMAP1)	   := omap1
- machine-$(CONFIG_ARCH_OMAP2)	   := omap2
-  incdir-$(CONFIG_ARCH_OMAP)	   := omap
- machine-$(CONFIG_ARCH_S3C2410)	   := s3c2410
- machine-$(CONFIG_ARCH_LH7A40X)	   := lh7a40x
- machine-$(CONFIG_ARCH_VERSATILE)  := versatile
- machine-$(CONFIG_ARCH_IMX)	   := imx
- machine-$(CONFIG_ARCH_H720X)	   := h720x
- machine-$(CONFIG_ARCH_AAEC2000)   := aaec2000
- machine-$(CONFIG_ARCH_REALVIEW)   := realview
- machine-$(CONFIG_ARCH_AT91)	   := at91
- machine-$(CONFIG_ARCH_EP93XX)	   := ep93xx
- machine-$(CONFIG_ARCH_PNX4008)	   := pnx4008
- machine-$(CONFIG_ARCH_NETX)	   := netx
- machine-$(CONFIG_ARCH_NS9XXX)	   := ns9xxx
- textofs-$(CONFIG_ARCH_NS9XXX)	   := 0x00108000
- machine-$(CONFIG_ARCH_DAVINCI)	   := davinci
- machine-$(CONFIG_ARCH_KS8695)     := ks8695
+ machine-$(CONFIG_ARCH_PXA)	   	:= pxa
+ machine-$(CONFIG_ARCH_L7200)	   	:= l7200
+ machine-$(CONFIG_ARCH_INTEGRATOR) 	:= integrator
+ machine-$(CONFIG_ARCH_FEROCEON_ORION)  := feroceon-orion
+ machine-$(CONFIG_ARCH_FEROCEON_KW) 	:= feroceon-kw
+ machine-$(CONFIG_ARCH_FEROCEON_MV78XX0)	:= feroceon-mv78xx0
+ textofs-$(CONFIG_ARCH_CLPS711X)   	:= 0x00028000
+ machine-$(CONFIG_ARCH_CLPS711X)   	:= clps711x
+ machine-$(CONFIG_ARCH_IOP32X)	   	:= iop32x
+ machine-$(CONFIG_ARCH_IOP33X)	   	:= iop33x
+ machine-$(CONFIG_ARCH_IOP13XX)	   	:= iop13xx
+ machine-$(CONFIG_ARCH_IXP4XX)	   	:= ixp4xx
+ machine-$(CONFIG_ARCH_IXP2000)    	:= ixp2000
+ machine-$(CONFIG_ARCH_IXP23XX)    	:= ixp23xx
+ machine-$(CONFIG_ARCH_OMAP1)	   	:= omap1
+ machine-$(CONFIG_ARCH_OMAP2)	   	:= omap2
+  incdir-$(CONFIG_ARCH_OMAP)	  	:= omap
+ machine-$(CONFIG_ARCH_S3C2410)	  	:= s3c2410
+ machine-$(CONFIG_ARCH_LH7A40X)	  	:= lh7a40x
+ machine-$(CONFIG_ARCH_VERSATILE) 	:= versatile
+ machine-$(CONFIG_ARCH_IMX)	  	:= imx
+ machine-$(CONFIG_ARCH_H720X)	 	:= h720x
+ machine-$(CONFIG_ARCH_AAEC2000)  	:= aaec2000
+ machine-$(CONFIG_ARCH_REALVIEW)  	:= realview
+ machine-$(CONFIG_ARCH_AT91)	  	:= at91
+ machine-$(CONFIG_ARCH_EP93XX)	  	:= ep93xx
+ machine-$(CONFIG_ARCH_PNX4008)	  	:= pnx4008
+ machine-$(CONFIG_ARCH_NETX)	  	:= netx
+ machine-$(CONFIG_ARCH_NS9XXX)	   	:= ns9xxx
+ textofs-$(CONFIG_ARCH_NS9XXX)	  	:= 0x00108000
+ machine-$(CONFIG_ARCH_DAVINCI)	 	:= davinci
+ machine-$(CONFIG_ARCH_KS8695)   	:= ks8695
 
 ifeq ($(CONFIG_ARCH_EBSA110),y)
 # This is what happens if you forget the IOCS16 line.

@@ -2603,6 +2603,16 @@ static void __meminit free_area_init_core(struct pglist_data *pgdat,
 		realsize = size - zone_absent_pages_in_node(nid, j,
 								zholes_size);
 
+                /*
+                 * DRI change.
+                 * Adjust for the fact that on Bishop we are removing
+                 * 320MiB of memory (128MiB used by VxWorks and 192MiB used
+                 * for shared memory. If we don't, it screws up Linux's 
+                 * memory allocation algorithms.
+                 */
+                if (j == 0) 
+                        realsize -= ((128 + 192) * 1024 * 1024 / PAGE_SIZE); /* Adjust for unusable */
+
 		/*
 		 * Adjust realsize so that it accounts for how much memory
 		 * is used by this zone for memmap. This affects the watermark
@@ -2632,6 +2642,8 @@ static void __meminit free_area_init_core(struct pglist_data *pgdat,
 
 		zone->spanned_pages = size;
 		zone->present_pages = realsize;
+                printk(KERN_INFO "%s: realsize: %u, size: %u, memmap_pages: %u"
+                        "\n", __func__, realsize, size, memmap_pages);
 #ifdef CONFIG_NUMA
 		zone->node = nid;
 		zone->min_unmapped_pages = (realsize*sysctl_min_unmapped_ratio)

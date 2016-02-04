@@ -32,6 +32,14 @@
 #include <net/netfilter/nf_conntrack_l3proto.h>
 #include <net/netfilter/nf_conntrack_l4proto.h>
 
+#ifdef CONFIG_MV_ETH_NFP_NAT_SUPPORT
+extern int fp_disable_flag;
+extern int fp_nat_info_set(u32 src_ip, u32 dst_ip, u16 src_port, u16 dst_port, u8 proto, 
+		u32 new_src_ip, u32 new_dst_ip, u16 new_src_port, u16 new_dst_port, 
+		int if_index, enum nf_nat_manip_type maniptype);
+#endif /* CONFIG_MV_ETH_NFP_NAT_SUPPORT */
+
+
 #if 0
 #define DEBUGP printk
 #else
@@ -316,7 +324,6 @@ nf_nat_setup_info(struct nf_conn *ct,
 			     &ct->tuplehash[IP_CT_DIR_REPLY].tuple);
 
 	get_unique_tuple(&new_tuple, &curr_tuple, range, ct, maniptype);
-
 	if (!nf_ct_tuple_equal(&new_tuple, &curr_tuple)) {
 		struct nf_conntrack_tuple reply;
 
@@ -361,11 +368,33 @@ manip_pkt(u_int16_t proto,
 {
 	struct iphdr *iph;
 	struct nf_nat_protocol *p;
-
 	if (!skb_make_writable(pskb, iphdroff + sizeof(*iph)))
 		return 0;
 
 	iph = (void *)(*pskb)->data + iphdroff;
+
+#ifdef CONFIG_MV_ETH_NFP_NAT_SUPPORT
+	if( (!fp_disable_flag) && ((proto == IPPROTO_TCP) || (proto == IPPROTO_UDP)) )
+	{
+		u16 src_port = 0, dst_port = 0;
+		int if_index = (*pskb)->dev ? (*pskb)->dev->ifindex : -1;
+
+		if (proto == IPPROTO_TCP) {
+			struct tcphdr *hdr = (struct tcphdr *)((*pskb)->data + iphdroff + iph->ihl*4);
+			src_port = hdr->source;
+			dst_port = hdr->dest;
+		} 
+		else if (proto == IPPROTO_UDP) {
+			struct udphdr *hdr = (struct udphdr *)((*pskb)->data + iphdroff + iph->ihl*4);
+			src_port = hdr->source;
+			dst_port = hdr->dest;
+		}
+
+		fp_nat_info_set(iph->saddr, iph->daddr, src_port, dst_port, proto, 
+				target->src.u3.ip, target->dst.u3.ip, target->src.u.all, target->dst.u.all, 
+				if_index, maniptype);
+	}
+#endif /* CONFIG_MV_ETH_NFP_NAT_SUPPORT */
 
 	/* Manipulate protcol part. */
 
@@ -411,7 +440,6 @@ unsigned int nf_nat_packet(struct nf_conn *ct,
 
 		/* We are aiming to look like inverse of other direction. */
 		nf_ct_invert_tuplepr(&target, &ct->tuplehash[!dir].tuple);
-
 		if (!manip_pkt(target.dst.protonum, pskb, 0, &target, mtype))
 			return NF_DROP;
 	}

@@ -21,6 +21,19 @@
 
 /* definitions used for the EHCI driver */
 
+/* magic numbers that can affect system performance */
+#define	EHCI_TUNE_CERR		3	/* 0-3 qtd retries; 0 == don't stop */
+#define	EHCI_TUNE_RL_HS		4	/* nak throttle; see 4.9 */
+#define	EHCI_TUNE_RL_TT		0
+#define	EHCI_TUNE_MULT_HS	1	/* 1-3 transactions/uframe; 4.10.3 */
+#define	EHCI_TUNE_MULT_TT	1
+#define	EHCI_TUNE_FLS		2	/* (small) 256 frame schedule */
+
+#define EHCI_IAA_JIFFIES	(HZ/100)	/* arbitrary; ~10 msec */
+#define EHCI_IO_JIFFIES		(HZ/10)		/* io watchdog > irq_thresh */
+#define EHCI_ASYNC_JIFFIES	(HZ/20)		/* async idle timeout */
+#define EHCI_SHRINK_JIFFIES	(HZ/200)	/* async qh unlink delay */
+
 /* statistics can be kept for for tuning/monitoring */
 struct ehci_stats {
 	/* irq usage */
@@ -435,6 +448,7 @@ struct ehci_qh {
 	u16			tt_usecs;	/* tt downstream bandwidth */
 	unsigned short		period;		/* polling interval */
 	unsigned short		start;		/* where polling starts */
+	unsigned short		u_period;	/* polling interval in uframes */
 #define NO_FRAME ((unsigned short)~0)			/* pick new start */
 	struct usb_device	*dev;		/* access to TT */
 } __attribute__ ((aligned (32)));
@@ -489,7 +503,7 @@ struct ehci_iso_stream {
 	 * trusting urb->interval == f(epdesc->bInterval) and
 	 * including the extra info for hw_bufp[0..2]
 	 */
-	u8			interval;
+	u16			interval;
 	u8			usecs, c_usecs;
 	u16			tt_usecs;
 	u16			maxp;

@@ -2,23 +2,24 @@
  *
  * Name:	skdebug.h
  * Project:	Gigabit Ethernet Adapters, Common Modules
- * Version:	$Revision: 1.14 $
- * Date:	$Date: 2003/05/13 17:26:00 $
+ * Version:	$Revision: 2.5 $
+ * Date:	$Date: 2007/03/20 08:43:56 $
  * Purpose:	SK specific DEBUG support
  *
  ******************************************************************************/
 
 /******************************************************************************
  *
+ *	LICENSE:
  *	(C)Copyright 1998-2002 SysKonnect.
- *	(C)Copyright 2002-2003 Marvell.
+ *	(C)Copyright 2002-2005 Marvell.
  *
  *	This program is free software; you can redistribute it and/or modify
  *	it under the terms of the GNU General Public License as published by
  *	the Free Software Foundation; either version 2 of the License, or
  *	(at your option) any later version.
- *
  *	The information in this file is provided "AS IS" without warranty.
+ *	/LICENSE
  *
  ******************************************************************************/
 
@@ -28,13 +29,22 @@
 #ifdef	DEBUG
 #ifndef SK_DBG_MSG
 #define SK_DBG_MSG(pAC,comp,cat,arg) \
-		if ( ((comp) & SK_DBG_CHKMOD(pAC)) && 	\
-		      ((cat) & SK_DBG_CHKCAT(pAC)) ) { 	\
-			SK_DBG_PRINTF arg ;		\
+		if ( ((comp) & SK_DBG_CHKMOD(pAC)) &&	\
+		      ((cat) & SK_DBG_CHKCAT(pAC)) ) {	\
+			SK_DBG_PRINTF arg;		\
+		}
+#endif
+#ifndef SK_DBG_DMP
+#define SK_DBG_DMP(pAC,comp,cat,addr,len) \
+		if ( ((comp) & SK_DBG_CHKMOD(pAC)) &&	\
+		      ((cat) & SK_DBG_CHKCAT(pAC)) &&	\
+		      (SK_DBG_CHKCAT(pAC) & SK_DBGCAT_DUMP ) ) {	\
+			DUMP( addr, len );		\
 		}
 #endif
 #else
 #define SK_DBG_MSG(pAC,comp,lev,arg)
+#define SK_DBG_DMP(pAC,comp,cat,addr,len)
 #endif
 
 /* PLS NOTE:
@@ -58,6 +68,14 @@
 #define SK_DBGMOD_ADDR	0x00000080L	/* ADDR module */
 #define SK_DBGMOD_PECP	0x00000100L	/* PECP module */
 #define SK_DBGMOD_POWM	0x00000200L	/* Power Management module */
+#ifdef SK_ASF
+#define SK_DBGMOD_ASF	0x00000400L	/* ASF module */
+#endif
+#ifdef SK_LBFO
+#define SK_DBGMOD_LACP	0x00000800L	/* link aggregation control protocol */
+#define SK_DBGMOD_FD	0x00001000L	/* frame distributor (link aggregation) */
+#endif /* SK_LBFO */
+#define SK_DBGMOD_MACS	0x00002000L	/* MACSec module */
 
 /* Debug events */
 

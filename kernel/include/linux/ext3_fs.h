@@ -127,9 +127,19 @@ struct ext3_group_desc
 	__le16	bg_free_blocks_count;	/* Free blocks count */
 	__le16	bg_free_inodes_count;	/* Free inodes count */
 	__le16	bg_used_dirs_count;	/* Directories count */
-	__u16	bg_pad;
-	__le32	bg_reserved[3];
+  /* NC START */
+	__le16	bg_flags; /* For BG flags like INODE_UNINIT */
+	__le32	bg_reserved[2];
+  __le16 bg_itable_unused;
+  __le16 bg_checksum;
+  /* NC END */
 };
+
+/* NC START */
+#define EXT3_BG_INODE_UNINIT   0x0001 /* Inode table/bitmap not in use */
+#define EXT3_BG_BLOCK_UNINIT   0x0002 /* Block bitmap not in use */
+#define EXT3_BG_INODE_ZEROED   0x0004 /* On-disk itable initialized to zero */
+/* NC END */
 
 /*
  * Macro-instructions used to manage group descriptors
@@ -576,6 +586,7 @@ static inline int ext3_valid_inum(struct super_block *sb, unsigned long ino)
 #define EXT3_FEATURE_RO_COMPAT_SPARSE_SUPER	0x0001
 #define EXT3_FEATURE_RO_COMPAT_LARGE_FILE	0x0002
 #define EXT3_FEATURE_RO_COMPAT_BTREE_DIR	0x0004
+#define EXT3_FEATURE_RO_COMPAT_GDT_CSUM   0x0010 /* NC */
 
 #define EXT3_FEATURE_INCOMPAT_COMPRESSION	0x0001
 #define EXT3_FEATURE_INCOMPAT_FILETYPE		0x0002
@@ -586,9 +597,12 @@ static inline int ext3_valid_inum(struct super_block *sb, unsigned long ino)
 #define EXT3_FEATURE_COMPAT_SUPP	EXT2_FEATURE_COMPAT_EXT_ATTR
 #define EXT3_FEATURE_INCOMPAT_SUPP	(EXT3_FEATURE_INCOMPAT_FILETYPE| \
 					 EXT3_FEATURE_INCOMPAT_RECOVER| \
-					 EXT3_FEATURE_INCOMPAT_META_BG)
+					 EXT3_FEATURE_INCOMPAT_META_BG) 
+           
+           /* NC - added _GDT_ */
 #define EXT3_FEATURE_RO_COMPAT_SUPP	(EXT3_FEATURE_RO_COMPAT_SPARSE_SUPER| \
 					 EXT3_FEATURE_RO_COMPAT_LARGE_FILE| \
+           EXT3_FEATURE_RO_COMPAT_GDT_CSUM| \
 					 EXT3_FEATURE_RO_COMPAT_BTREE_DIR)
 
 /*
@@ -880,6 +894,44 @@ extern const struct inode_operations ext3_special_inode_operations;
 extern const struct inode_operations ext3_symlink_inode_operations;
 extern const struct inode_operations ext3_fast_symlink_inode_operations;
 
+
+/* NC START */
+
+#define EXT3_MAX_CONTENTION		8
+
+/* data type for block group number */
+typedef unsigned int ext3_group_t;
+
+static inline void ext3_lock_group(struct super_block *sb, ext3_group_t group)
+{
+  spin_lock(sb_bgl_lock(EXT3_SB(sb), group));
+}
+
+static inline void ext3_unlock_group(struct super_block *sb,
+					ext3_group_t group)
+{
+	spin_unlock(sb_bgl_lock(EXT3_SB(sb), group));
+}
+
+/*
+ * Add new method to test whether block and inode bitmaps are properly
+ * initialized. With uninit_bg reading the block from disk is not enough
+ * to mark the bitmap uptodate. We need to also zero-out the bitmap
+ */
+
+#define BH_BITMAP_UPTODATE (BH_PrivateStart+9) /* NC same value that ext4 uses */
+
+static inline int bitmap_uptodate(struct buffer_head *bh)
+{
+	return (buffer_uptodate(bh) &&
+			test_bit(BH_BITMAP_UPTODATE, &(bh)->b_state));
+}
+static inline void set_bitmap_uptodate(struct buffer_head *bh)
+{
+	set_bit(BH_BITMAP_UPTODATE, &(bh)->b_state);
+}
+
+/* NC END */
 
 #endif	/* __KERNEL__ */
 

@@ -2,14 +2,15 @@
  *
  * Name:	skrlmt.h
  * Project:	GEnesis, PCI Gigabit Ethernet Adapter
- * Version:	$Revision: 1.37 $
- * Date:	$Date: 2003/04/15 09:43:43 $
+ * Version:	$Revision: 2.3 $
+ * Date:	$Date: 2007/07/30 08:45:33 $
  * Purpose:	Header file for Redundant Link ManagemenT.
  *
  ******************************************************************************/
 
 /******************************************************************************
  *
+ *	LICENSE:
  *	(C)Copyright 1998-2002 SysKonnect GmbH.
  *	(C)Copyright 2002-2003 Marvell.
  *
@@ -19,6 +20,7 @@
  *	(at your option) any later version.
  *
  *	The information in this file is provided "AS IS" without warranty.
+ *	/LICENSE
  *
  ******************************************************************************/
 
@@ -391,9 +393,12 @@ typedef struct s_Rlmt {
 
 /* ----- Private part ----- */
 	SK_BOOL			CheckSwitch;
-	SK_BOOL			RlmtOff;            /* set to zero if the Mac addresses 
-                                           are equal or the second one 
-                                           is zero */
+	SK_BOOL			RlmtOff;			/* set to non zero value if:
+										 * - Mac addresses are equal
+										 * - second MAC address is zero
+										 * - it is a single link adapter
+										 * - adapter is in DualNet mode
+										 */
 	SK_U16			Align01;
 
 } SK_RLMT;

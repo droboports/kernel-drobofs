@@ -67,6 +67,13 @@ do { \
 
 #endif
 
+#define DRI_INTERCORE_FLASH_LOCKING 1
+#ifdef DRI_INTERCORE_FLASH_LOCKING
+extern int dri_lock_flash_till_timeout(void);
+extern void dri_unlock_flash(void);
+#endif
+
+
 /* check for QRY.
    in: interleave,type,mode
    ret: table index, <0 for error
@@ -75,6 +82,12 @@ static int __xipram qry_present(struct map_info *map, __u32 base,
 				struct cfi_private *cfi)
 {
 	int osf = cfi->interleave * cfi->device_type;	// scale factor
+
+	if (0 != dri_lock_flash_till_timeout()) {
+		printk("In Func: %s\n", __func__);
+	  return 0;
+	}
+
 	map_word val[3];
 	map_word qry[3];
 
@@ -86,15 +99,22 @@ static int __xipram qry_present(struct map_info *map, __u32 base,
 	val[1] = map_read(map, base + osf*0x11);
 	val[2] = map_read(map, base + osf*0x12);
 
-	if (!map_word_equal(map, qry[0], val[0]))
+	if (!map_word_equal(map, qry[0], val[0])) {
+		dri_unlock_flash();
 		return 0;
+	}
 
-	if (!map_word_equal(map, qry[1], val[1]))
+	if (!map_word_equal(map, qry[1], val[1])) {
+		dri_unlock_flash();
 		return 0;
+	}
 
-	if (!map_word_equal(map, qry[2], val[2]))
+	if (!map_word_equal(map, qry[2], val[2])) {
+		dri_unlock_flash();
 		return 0;
+	}
 
+	dri_unlock_flash();
 	return 1; 	// "QRY" found
 }
 
@@ -103,16 +123,23 @@ static int __xipram cfi_probe_chip(struct map_info *map, __u32 base,
 {
 	int i;
 
+	if (0 != dri_lock_flash_till_timeout()) {
+	  printk("In Func: %s\n", __func__);
+	  return 0;
+	}
+
 	if ((base + 0) >= map->size) {
 		printk(KERN_NOTICE
 			"Probe at base[0x00](0x%08lx) past the end of the map(0x%08lx)\n",
 			(unsigned long)base, map->size -1);
+		dri_unlock_flash();
 		return 0;
 	}
 	if ((base + 0xff) >= map->size) {
 		printk(KERN_NOTICE
 			"Probe at base[0x55](0x%08lx) past the end of the map(0x%08lx)\n",
 			(unsigned long)base + 0x55, map->size -1);
+		dri_unlock_flash();
 		return 0;
 	}
 
@@ -123,12 +150,14 @@ static int __xipram cfi_probe_chip(struct map_info *map, __u32 base,
 
 	if (!qry_present(map,base,cfi)) {
 		xip_enable(base, map, cfi);
+		dri_unlock_flash();
 		return 0;
 	}
 
 	if (!cfi->numchips) {
 		/* This is the first time we're called. Set up the CFI
 		   stuff accordingly and return */
+		dri_unlock_flash();
 		return cfi_chip_setup(map, cfi);
 	}
 
@@ -153,6 +182,7 @@ static int __xipram cfi_probe_chip(struct map_info *map, __u32 base,
 				xip_allowed(base, map);
 				printk(KERN_DEBUG "%s: Found an alias at 0x%x for the chip at 0x%lx\n",
 				       map->name, base, start);
+				dri_unlock_flash();
 				return 0;
 			}
 			/* Yes, it's actually got QRY for data. Most
@@ -166,6 +196,7 @@ static int __xipram cfi_probe_chip(struct map_info *map, __u32 base,
 				xip_allowed(base, map);
 				printk(KERN_DEBUG "%s: Found an alias at 0x%x for the chip at 0x%lx\n",
 				       map->name, base, start);
+				dri_unlock_flash();
 				return 0;
 			}
 		}
@@ -185,6 +216,7 @@ static int __xipram cfi_probe_chip(struct map_info *map, __u32 base,
 	       map->name, cfi->interleave, cfi->device_type*8, base,
 	       map->bankwidth*8);
 
+	dri_unlock_flash();
 	return 1;
 }
 
@@ -196,16 +228,24 @@ static int __xipram cfi_chip_setup(struct map_info *map,
 	int num_erase_regions = cfi_read_query(map, base + (0x10 + 28)*ofs_factor);
 	int i;
 
+	if (0 != dri_lock_flash_till_timeout()) {
+	  printk("In Func: %s\n", __func__);
+	  return 0;
+	}
+
 	xip_enable(base, map, cfi);
 #ifdef DEBUG_CFI
 	printk("Number of erase regions: %d\n", num_erase_regions);
 #endif
-	if (!num_erase_regions)
+	if (!num_erase_regions) {
+		dri_unlock_flash();
 		return 0;
+	}
 
 	cfi->cfiq = kmalloc(sizeof(struct cfi_ident) + num_erase_regions * 4, GFP_KERNEL);
 	if (!cfi->cfiq) {
 		printk(KERN_WARNING "%s: kmalloc failed for CFI ident structure\n", map->name);
+		dri_unlock_flash();
 		return 0;
 	}
 
@@ -266,6 +306,7 @@ static int __xipram cfi_chip_setup(struct map_info *map,
 	       map->name, cfi->interleave, cfi->device_type*8, base,
 	       map->bankwidth*8);
 
+	dri_unlock_flash();
 	return 1;
 }
 

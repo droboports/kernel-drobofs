@@ -155,6 +155,7 @@ enum hub_led_mode {
 	INDICATOR_ALT_BLINK, INDICATOR_ALT_BLINK_OFF
 } __attribute__ ((packed));
 
+
 struct usb_device;
 
 /* Transaction Translator Think Times, in bits */
@@ -188,6 +189,47 @@ struct usb_tt_clear {
 	struct list_head	clear_list;
 	unsigned		tt;
 	u16			devinfo;
+};
+
+struct usb_hub {
+	struct device		*intfdev;	/* the "interface" device */
+	struct usb_device	*hdev;
+	struct urb		*urb;		/* for interrupt polling pipe */
+
+	/* buffer for urb ... with extra space in case of babble */
+	char			(*buffer)[8];
+	dma_addr_t		buffer_dma;	/* DMA address for buffer */
+	union {
+		struct usb_hub_status	hub;
+		struct usb_port_status	port;
+	}			*status;	/* buffer for status reports */
+	struct mutex		status_mutex;	/* for the status buffer */
+
+	int			error;		/* last reported error */
+	int			nerrors;	/* track consecutive errors */
+
+	struct list_head	event_list;	/* hubs w/data or errs ready */
+	unsigned long		event_bits[1];	/* status change bitmask */
+	unsigned long		change_bits[1];	/* ports with logical connect
+							status change */
+	unsigned long		busy_bits[1];	/* ports being reset or
+							resumed */
+#if USB_MAXCHILDREN > 31 /* 8*sizeof(unsigned long) - 1 */
+#error event_bits[] is too short!
+#endif
+
+	struct usb_hub_descriptor *descriptor;	/* class descriptor */
+	struct usb_tt		tt;		/* Transaction Translator */
+
+	unsigned		mA_per_port;	/* current for each child */
+
+	unsigned		limited_power:1;
+	unsigned		quiescing:1;
+	unsigned		activating:1;
+
+	unsigned		has_indicators:1;
+	u8			indicator[USB_MAXCHILDREN];
+	struct delayed_work	leds;
 };
 
 extern void usb_hub_tt_clear_buffer (struct usb_device *dev, int pipe);

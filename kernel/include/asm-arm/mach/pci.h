@@ -37,6 +37,7 @@ struct pci_sys_data {
 					/* IRQ mapping				*/
 	int		(*map_irq)(struct pci_dev *, u8, u8);
 	struct hw_pci	*hw;
+	int    mv_controller_num;
 };
 
 /*

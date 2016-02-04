@@ -24,6 +24,18 @@
 
 #include "dm.h"
 
+#if defined(CONFIG_OCF_DM_CRYPT)
+
+#undef DM_DEBUG
+#ifdef DM_DEBUG
+#define dmprintk printk
+#else
+#define dmprintk(fmt,args...) 
+#endif
+
+#include <../crypto/ocf/cryptodev.h>
+#endif
+
 #define DM_MSG_PREFIX "crypt"
 #define MESG_STR(x) x, sizeof(x)
 
@@ -94,17 +106,26 @@ struct crypt_config {
 
 	char cipher[CRYPTO_MAX_ALG_NAME];
 	char chainmode[CRYPTO_MAX_ALG_NAME];
+#if defined(CONFIG_OCF_DM_CRYPT)
+	struct cryptoini 	cr_dm;    		/* OCF session */
+	uint64_t 	 	ocf_cryptoid;		/* OCF sesssion ID */
+#else
 	struct crypto_blkcipher *tfm;
+#endif
 	unsigned long flags;
 	unsigned int key_size;
 	u8 key[0];
 };
 
-#define MIN_IOS        16
+#define MIN_IOS        256
 #define MIN_POOL_PAGES 32
 #define MIN_BIO_PAGES  8
 
 static struct kmem_cache *_crypt_io_pool;
+wait_queue_head_t   dm_waitq;
+static volatile u32 wake = 0;
+static atomic_t blocked;
+
 
 static void clone_init(struct crypt_io *, struct bio *);
 
@@ -185,8 +206,12 @@ static int crypt_iv_essiv_ctr(struct crypt_config *cc, struct dm_target *ti,
 		kfree(salt);
 		return PTR_ERR(essiv_tfm);
 	}
+#if  defined(CONFIG_OCF_DM_CRYPT)
+	if (crypto_cipher_blocksize(essiv_tfm) != cc->iv_size) {
+#else
 	if (crypto_cipher_blocksize(essiv_tfm) !=
 	    crypto_blkcipher_ivsize(cc->tfm)) {
+#endif
 		ti->error = "Block size of ESSIV cipher does "
 			        "not match IV size of block cipher";
 		crypto_free_cipher(essiv_tfm);
@@ -220,6 +245,7 @@ static int crypt_iv_essiv_gen(struct crypt_config *cc, u8 *iv, sector_t sector)
 	return 0;
 }
 
+#if !defined(CONFIG_OCF_DM_CRYPT)
 static int crypt_iv_benbi_ctr(struct crypt_config *cc, struct dm_target *ti,
 			      const char *opts)
 {
@@ -259,6 +285,7 @@ static int crypt_iv_benbi_gen(struct crypt_config *cc, u8 *iv, sector_t sector)
 
 	return 0;
 }
+#endif
 
 static int crypt_iv_null_gen(struct crypt_config *cc, u8 *iv, sector_t sector)
 {
@@ -277,15 +304,255 @@ static struct crypt_iv_operations crypt_iv_essiv_ops = {
 	.generator = crypt_iv_essiv_gen
 };
 
+#if !defined(CONFIG_OCF_DM_CRYPT)
 static struct crypt_iv_operations crypt_iv_benbi_ops = {
 	.ctr	   = crypt_iv_benbi_ctr,
 	.dtr	   = crypt_iv_benbi_dtr,
 	.generator = crypt_iv_benbi_gen
 };
+#endif
 
 static struct crypt_iv_operations crypt_iv_null_ops = {
 	.generator = crypt_iv_null_gen
 };
+
+#if defined(CONFIG_OCF_DM_CRYPT)
+static void dec_pending(struct crypt_io *io, int error);
+
+struct ocf_wr_priv {
+	u32 		 	dm_ocf_wr_completed;	/* Num of wr completions */
+	u32 		 	dm_ocf_wr_pending;	/* Num of wr pendings */
+	wait_queue_head_t	dm_ocf_wr_queue;	/* waiting Q, for wr completion */
+};
+
+/* WARN: ordering between processes is not guaranteed due to 'wake' handling */
+static int dm_ocf_wr_cb(struct cryptop *crp)
+{
+	struct ocf_wr_priv *ocf_wr_priv;
+
+	if(atomic_read(&blocked) > 0) {
+		atomic_dec(&blocked);
+		wake = 1;
+		wake_up(&dm_waitq);
+	}
+
+	if(crp == NULL) {
+		printk("dm_ocf_wr_cb: crp is NULL!! \n");
+		return 0;
+	}
+
+	ocf_wr_priv = (struct ocf_wr_priv*)crp->crp_opaque;
+
+	ocf_wr_priv->dm_ocf_wr_completed++;
+	
+	/* if no more pending for read, wake up the read task. */
+	if(ocf_wr_priv->dm_ocf_wr_completed == ocf_wr_priv->dm_ocf_wr_pending)
+		wake_up(&ocf_wr_priv->dm_ocf_wr_queue);
+
+	crypto_freereq(crp);
+	return 0;
+}
+
+static int dm_ocf_rd_cb(struct cryptop *crp)
+{
+	struct crypt_io *io;
+
+	if(atomic_read(&blocked) > 0) {
+		atomic_dec(&blocked);
+		wake = 1;
+		wake_up(&dm_waitq);
+	}
+
+	if(crp == NULL) {
+		printk("dm_ocf_rd_cb: crp is NULL!! \n");
+		return 0;
+	}
+
+	io = (struct crypt_io *)crp->crp_opaque;
+
+	crypto_freereq(crp);
+
+	if(io != NULL)
+		dec_pending(io, 0);
+
+	return 0;
+}
+
+static inline int dm_ocf_process(struct crypt_config *cc, struct scatterlist *out, 
+		struct scatterlist *in, unsigned int len, u8 *iv, int iv_size, int write, void *priv)
+{
+	struct cryptop *crp;
+	struct cryptodesc *crda = NULL;
+	u32 err;
+
+	if(!iv) {
+		printk("dm_ocf_process: only CBC mode is supported\n");
+		return -EPERM;	
+	}
+
+	crp = crypto_getreq(1);	 /* only encryption/decryption */
+	if (!crp) {
+		printk("dm_ocf_process: crypto_getreq failed!!\n");
+		return -ENOMEM;
+	}
+	
+	crda = crp->crp_desc;
+
+	crda->crd_flags  = (write)? CRD_F_ENCRYPT: 0;	
+	crda->crd_alg    = cc->cr_dm.cri_alg;
+	crda->crd_skip   = 0;
+	crda->crd_len    = len;
+	crda->crd_inject = 0; /* NA */
+	crda->crd_klen   = cc->cr_dm.cri_klen;
+	crda->crd_key    = cc->cr_dm.cri_key;
+
+	if (iv) {
+		crda->crd_flags |= (CRD_F_IV_EXPLICIT | CRD_F_IV_PRESENT);
+		if( iv_size > EALG_MAX_BLOCK_LEN ) {
+			printk("dm_ocf_process: iv is too big!!\n");
+		}
+		memcpy(&crda->crd_iv, iv, iv_size);		
+	}
+
+	/* according to the current implementation the in and the out are the same buffer for read, and different for write*/
+	if((page_address(out->page) + out->offset) != (page_address(in->page) + in->offset)) {
+		memcpy((page_address(out->page) + out->offset) , (page_address(in->page) + in->offset) , len);
+		dmprintk("dm_ocf_process: copy buffers!! \n");
+	}
+
+	dmprintk("len: %d",len);
+	crp->crp_ilen = len; /* Total input length */
+        crp->crp_flags = CRYPTO_F_CBIMM /*| CRYPTO_F_BATCH*/;
+        crp->crp_buf = page_address(out->page) + out->offset;
+	crp->crp_opaque = priv;
+	if(write) {
+        	crp->crp_callback = dm_ocf_wr_cb;
+	}
+	else {
+		crp->crp_callback = dm_ocf_rd_cb;
+	}
+        crp->crp_sid = cc->ocf_cryptoid;
+
+	while(crypto_dispatch(crp) != 0) {
+		wake = 0;
+		atomic_inc(&blocked);
+		err = wait_event_interruptible_exclusive(dm_waitq, wake);
+		if(err) {
+			printk("dm_ocf_process: wait_event_interruptible_exclusive failed !!\n");
+		return -ENOMEM;
+	}
+	}
+
+		return 0;
+	
+}
+
+static inline int
+ocf_crypt_convert_scatterlist(struct crypt_config *cc, struct scatterlist *out,
+                          struct scatterlist *in, unsigned int length,
+                          int write, sector_t sector, void *priv)
+{
+	u8 iv[cc->iv_size];
+	int r;
+
+	if (cc->iv_gen_ops) {
+		r = cc->iv_gen_ops->generator(cc, iv, sector);
+		if (r < 0)
+			return r;
+		r = dm_ocf_process(cc, out, in, length, iv, cc->iv_size, write, priv);
+	} else {
+		r = dm_ocf_process(cc, out, in, length, NULL, 0, write, priv);
+	}
+
+	return r;
+}
+
+/*
+ * Encrypt / decrypt data from one bio to another one (can be the same one)
+ */
+static int ocf_crypt_convert(struct crypt_config *cc,
+                         struct convert_context *ctx, struct crypt_io *io)
+{
+	int r = 0;
+	long wr_timeout = 30000;
+	long wr_tm;
+	int num = 0;
+	void *priv = NULL;
+	struct ocf_wr_priv *ocf_wr_priv = NULL;
+
+	if(ctx->write) {
+		ocf_wr_priv = kmalloc(sizeof(struct ocf_wr_priv),GFP_KERNEL);
+		if(!ocf_wr_priv) {
+			printk("ocf_crypt_convert: out of memory \n");
+			return -ENOMEM;
+		}
+		ocf_wr_priv->dm_ocf_wr_pending = 0;
+		ocf_wr_priv->dm_ocf_wr_completed = 0;
+		init_waitqueue_head(&ocf_wr_priv->dm_ocf_wr_queue);
+		priv = ocf_wr_priv;
+	}
+
+	while(ctx->idx_in < ctx->bio_in->bi_vcnt &&
+	      ctx->idx_out < ctx->bio_out->bi_vcnt) {
+		struct bio_vec *bv_in = bio_iovec_idx(ctx->bio_in, ctx->idx_in);
+		struct bio_vec *bv_out = bio_iovec_idx(ctx->bio_out, ctx->idx_out);
+		struct scatterlist sg_in = {
+			.page = bv_in->bv_page,
+			.offset = bv_in->bv_offset + ctx->offset_in,
+			.length = 1 << SECTOR_SHIFT
+		};
+		struct scatterlist sg_out = {
+			.page = bv_out->bv_page,
+			.offset = bv_out->bv_offset + ctx->offset_out,
+			.length = 1 << SECTOR_SHIFT
+		};
+
+		ctx->offset_in += sg_in.length;
+		if (ctx->offset_in >= bv_in->bv_len) {
+			ctx->offset_in = 0;
+			ctx->idx_in++;
+		}
+
+		ctx->offset_out += sg_out.length;
+		if (ctx->offset_out >= bv_out->bv_len) {
+			ctx->offset_out = 0;
+			ctx->idx_out++;
+		}
+
+		if(ctx->write) {
+			num++;
+		}
+		/* if last read in the context - send the io, so the OCF read callback will release the IO. */
+		else if(!(ctx->idx_in < ctx->bio_in->bi_vcnt && ctx->idx_out < ctx->bio_out->bi_vcnt)) {
+			priv = io;
+		}
+
+		r = ocf_crypt_convert_scatterlist(cc, &sg_out, &sg_in, sg_in.length,
+		                              ctx->write, ctx->sector, priv);
+		if (r < 0){
+			printk("ocf_crypt_convert: ocf_crypt_convert_scatterlist failed \n");
+			break;
+		}
+
+		ctx->sector++;
+	}
+
+	if(ctx->write) {
+		ocf_wr_priv->dm_ocf_wr_pending += num;
+		wr_tm = wait_event_timeout(ocf_wr_priv->dm_ocf_wr_queue, 
+				(ocf_wr_priv->dm_ocf_wr_pending == ocf_wr_priv->dm_ocf_wr_completed)
+									, msecs_to_jiffies(wr_timeout) );
+		if (!wr_tm) {
+			printk("ocf_crypt_convert: wr work was not finished in %ld msecs, %d pending %d completed.\n", 
+				wr_timeout, ocf_wr_priv->dm_ocf_wr_pending, ocf_wr_priv->dm_ocf_wr_completed);
+		}
+		kfree(ocf_wr_priv);
+	}
+
+	return r;
+}
+
+#else /* CONFIG_OCF_DM_CRYPT */
 
 static int
 crypt_convert_scatterlist(struct crypt_config *cc, struct scatterlist *out,
@@ -319,6 +586,8 @@ crypt_convert_scatterlist(struct crypt_config *cc, struct scatterlist *out,
 	return r;
 }
 
+#endif
+
 static void
 crypt_convert_init(struct crypt_config *cc, struct convert_context *ctx,
                    struct bio *bio_out, struct bio *bio_in,
@@ -334,6 +603,7 @@ crypt_convert_init(struct crypt_config *cc, struct convert_context *ctx,
 	ctx->write = write;
 }
 
+#if !defined(CONFIG_OCF_DM_CRYPT)
 /*
  * Encrypt / decrypt data from one bio to another one (can be the same one)
  */
@@ -379,6 +649,7 @@ static int crypt_convert(struct crypt_config *cc,
 
 	return r;
 }
+#endif
 
  static void dm_crypt_bio_destructor(struct bio *bio)
  {
@@ -613,8 +884,11 @@ static void process_write(struct crypt_io *io)
 
 		ctx.bio_out = clone;
 		ctx.idx_out = 0;
-
+#if defined(CONFIG_OCF_DM_CRYPT)
+	if (unlikely(ocf_crypt_convert(cc, &ctx, io)< 0)) {
+#else
 		if (unlikely(crypt_convert(cc, &ctx) < 0)) {
+#endif
 			crypt_free_buffer_pages(cc, clone, clone->bi_size);
 			bio_put(clone);
 			dec_pending(io, -EIO);
@@ -648,11 +922,27 @@ static void process_read_endio(struct crypt_io *io)
 {
 	struct crypt_config *cc = io->target->private;
 	struct convert_context ctx;
+	u32 r;
 
 	crypt_convert_init(cc, &ctx, io->base_bio, io->base_bio,
 			   io->base_bio->bi_sector - io->target->begin, 0);
+#if defined(CONFIG_OCF_DM_CRYPT)
+	r = ocf_crypt_convert(cc, &ctx, io);
+	if(r < 0) {
+		u32 rd_failed_timeout = 500;
+		wait_queue_head_t dm_ocf_rd_failed_queu;
 
+		init_waitqueue_head(&dm_ocf_rd_failed_queu);
+
+		/* wait a bit before freeing the io, maybe few requests are still in process */
+		wait_event_timeout(dm_ocf_rd_failed_queu, 0, msecs_to_jiffies(rd_failed_timeout) );
+
+		dec_pending(io, r); 
+
+	}
+#else
 	dec_pending(io, crypt_convert(cc, &ctx));
+#endif
 }
 
 static void kcryptd_do_work(struct work_struct *work)
@@ -740,7 +1030,9 @@ static int crypt_wipe_key(struct crypt_config *cc)
 static int crypt_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 {
 	struct crypt_config *cc;
+#ifndef CONFIG_OCF_DM_CRYPT
 	struct crypto_blkcipher *tfm;
+#endif
 	char *tmp;
 	char *cipher;
 	char *chainmode;
@@ -794,15 +1086,46 @@ static int crypt_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		goto bad1;
 	}
 
+#if defined(CONFIG_OCF_DM_CRYPT)
+	/* prepare a new OCF session */
+        memset(&cc->cr_dm, 0, sizeof(struct cryptoini));
+
+	if((strcmp(cipher,"aes") == 0) && (strcmp(chainmode, "cbc") == 0))
+        	cc->cr_dm.cri_alg  = CRYPTO_AES_CBC;
+	else if((strcmp(cipher,"des") == 0) && (strcmp(chainmode, "cbc") == 0))
+        	cc->cr_dm.cri_alg  = CRYPTO_DES_CBC;
+	else if((strcmp(cipher,"des3_ede") == 0) && (strcmp(chainmode, "cbc") == 0))
+        	cc->cr_dm.cri_alg  = CRYPTO_3DES_CBC; 
+	else {
+		ti->error = DM_MSG_PREFIX "using OCF: unknown cipher or bad chain mode";
+		goto bad1;
+	}
+
+	/*strcpy(cc->cipher, cipher);*/
+	dmprintk("key size is %d\n",cc->key_size);
+        cc->cr_dm.cri_klen = cc->key_size*8;
+        cc->cr_dm.cri_key  = cc->key;
+        cc->cr_dm.cri_next = NULL;
+
+        if(crypto_newsession(&cc->ocf_cryptoid, &cc->cr_dm, 0)){
+		dmprintk("crypt_ctr: crypto_newsession failed\n");
+                ti->error = DM_MSG_PREFIX "crypto_newsession failed";
+                goto bad2;
+        }
+
+#else
+
 	tfm = crypto_alloc_blkcipher(cc->cipher, 0, CRYPTO_ALG_ASYNC);
 	if (IS_ERR(tfm)) {
 		ti->error = "Error allocating crypto tfm";
 		goto bad1;
 	}
-
+#endif
 	strcpy(cc->cipher, cipher);
 	strcpy(cc->chainmode, chainmode);
+#if !defined(CONFIG_OCF_DM_CRYPT)
 	cc->tfm = tfm;
+#endif
 
 	/*
 	 * Choose ivmode. Valid modes: "plain", "essiv:<esshash>", "benbi".
@@ -815,14 +1138,31 @@ static int crypt_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		cc->iv_gen_ops = &crypt_iv_plain_ops;
 	else if (strcmp(ivmode, "essiv") == 0)
 		cc->iv_gen_ops = &crypt_iv_essiv_ops;
+#if !defined(CONFIG_OCF_DM_CRYPT)
 	else if (strcmp(ivmode, "benbi") == 0)
 		cc->iv_gen_ops = &crypt_iv_benbi_ops;
+#endif
 	else if (strcmp(ivmode, "null") == 0)
 		cc->iv_gen_ops = &crypt_iv_null_ops;
 	else {
 		ti->error = "Invalid IV mode";
 		goto bad2;
 	}
+
+#if defined(CONFIG_OCF_DM_CRYPT)
+	switch (cc->cr_dm.cri_alg) {
+		case CRYPTO_AES_CBC:
+			cc->iv_size = 16;
+			break;
+		default:
+			cc->iv_size = 8;
+			break;
+	}
+
+	if (cc->iv_gen_ops && cc->iv_gen_ops->ctr &&
+	    cc->iv_gen_ops->ctr(cc, ti, ivopts) < 0)
+		goto bad2;
+#else
 
 	if (cc->iv_gen_ops && cc->iv_gen_ops->ctr &&
 	    cc->iv_gen_ops->ctr(cc, ti, ivopts) < 0)
@@ -841,7 +1181,7 @@ static int crypt_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 			cc->iv_gen_ops = NULL;
 		}
 	}
-
+#endif
 	cc->io_pool = mempool_create_slab_pool(MIN_IOS, _crypt_io_pool);
 	if (!cc->io_pool) {
 		ti->error = "Cannot allocate crypt io mempool";
@@ -859,11 +1199,12 @@ static int crypt_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		ti->error = "Cannot allocate crypt bioset";
 		goto bad_bs;
 	}
-
+#if !defined(CONFIG_OCF_DM_CRYPT)
 	if (crypto_blkcipher_setkey(tfm, cc->key, key_size) < 0) {
 		ti->error = "Error setting key";
 		goto bad5;
 	}
+#endif
 
 	if (sscanf(argv[2], "%llu", &tmpll) != 1) {
 		ti->error = "Invalid iv_offset sector";
@@ -908,7 +1249,11 @@ bad3:
 	if (cc->iv_gen_ops && cc->iv_gen_ops->dtr)
 		cc->iv_gen_ops->dtr(cc);
 bad2:
+#if defined(CONFIG_OCF_DM_CRYPT)
+	crypto_freesession(cc->ocf_cryptoid);
+#else
 	crypto_free_blkcipher(tfm);
+#endif
 bad1:
 	/* Must zero key material before freeing */
 	memset(cc, 0, sizeof(*cc) + cc->key_size * sizeof(u8));
@@ -929,7 +1274,11 @@ static void crypt_dtr(struct dm_target *ti)
 	kfree(cc->iv_mode);
 	if (cc->iv_gen_ops && cc->iv_gen_ops->dtr)
 		cc->iv_gen_ops->dtr(cc);
+#if defined(CONFIG_OCF_DM_CRYPT)
+	crypto_freesession(cc->ocf_cryptoid);
+#else
 	crypto_free_blkcipher(cc->tfm);
+#endif
 	dm_put_device(ti, cc->dev);
 
 	/* Must zero key material before freeing */
@@ -1079,6 +1428,14 @@ static int __init dm_crypt_init(void)
 		DMERR("register failed %d", r);
 		goto bad2;
 	}
+
+	init_waitqueue_head(&dm_waitq);
+
+	atomic_set(&blocked, 0);
+
+#ifdef CONFIG_OCF_DM_CRYPT
+	printk("dm_crypt using the OCF package.\n");
+#endif
 
 	return 0;
 

@@ -16,6 +16,7 @@
 #include <linux/errno.h>
 #include <linux/slab.h>
 
+#include "group.h"
 
 #define outside(b, first, last)	((b) < (first) || (b) >= (last))
 #define inside(b, first, last)	((b) >= (first) && (b) < (last))
@@ -139,6 +140,8 @@ static struct buffer_head *bclean(handle_t *handle, struct super_block *sb,
  * need to use it within a single byte (to ensure we get endianness right).
  * We can use memset for the rest of the bitmap as there are no other users.
  */
+/* NC START - this function commented out
+ *
 static void mark_bitmap_end(int start_bit, int end_bit, char *bitmap)
 {
 	int i;
@@ -151,7 +154,7 @@ static void mark_bitmap_end(int start_bit, int end_bit, char *bitmap)
 		ext3_set_bit(i, bitmap);
 	if (i < end_bit)
 		memset(bitmap + (i >> 3), 0xff, (end_bit - i) >> 3);
-}
+} END NC */
 
 /*
  * Set up the block and inode bitmaps, and the inode table for the new group.
@@ -833,6 +836,9 @@ int ext3_group_add(struct super_block *sb, struct ext3_new_group_data *input)
 	gdp->bg_inode_table = cpu_to_le32(input->inode_table);
 	gdp->bg_free_blocks_count = cpu_to_le16(input->free_blocks_count);
 	gdp->bg_free_inodes_count = cpu_to_le16(EXT3_INODES_PER_GROUP(sb));
+  /* NC START */
+  gdp->bg_checksum = ext3_group_desc_csum(sbi, input->group, gdp);
+  /* NC END */
 
 	/*
 	 * Make the new blocks and inodes valid next.  We do this before

@@ -27,6 +27,12 @@
 #include <linux/mtd/cfi.h>
 #include <linux/mtd/compatmac.h>
 
+#define DRI_INTERCORE_FLASH_LOCKING 1
+#ifdef DRI_INTERCORE_FLASH_LOCKING
+extern int dri_lock_flash_till_timeout(void);
+extern void dri_unlock_flash(void);
+#endif
+
 struct cfi_extquery *
 __xipram cfi_read_pri(struct map_info *map, __u16 adr, __u16 size, const char* name)
 {
@@ -35,6 +41,11 @@ __xipram cfi_read_pri(struct map_info *map, __u16 adr, __u16 size, const char* n
 	int ofs_factor = cfi->interleave * cfi->device_type;
 	int i;
 	struct cfi_extquery *extp = NULL;
+
+	if (0 != dri_lock_flash_till_timeout()) {
+	  printk("In Func: %s\n", __func__);
+	  return 0;
+	}
 
 	printk(" %s Extended Query Table at 0x%4.4X\n", name, adr);
 	if (!adr)
@@ -69,7 +80,9 @@ __xipram cfi_read_pri(struct map_info *map, __u16 adr, __u16 size, const char* n
 	local_irq_enable();
 #endif
 
- out:	return extp;
+ out:	
+	dri_unlock_flash();
+	return extp;
 }
 
 EXPORT_SYMBOL(cfi_read_pri);

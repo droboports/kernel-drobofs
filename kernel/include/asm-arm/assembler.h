@@ -49,7 +49,7 @@
 /*
  * Data preload for architectures that support it
  */
-#if __LINUX_ARM_ARCH__ >= 5
+#if __LINUX_ARM_ARCH__ >= 5 && defined(CONFIG_USE_DSP)
 #define PLD(code...)	code
 #else
 #define PLD(code...)

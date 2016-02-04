@@ -610,13 +610,17 @@ void usb_stor_invoke_transport(struct scsi_cmnd *srb, struct us_data *us)
 		old_sc_data_direction = srb->sc_data_direction;
 		srb->sc_data_direction = DMA_FROM_DEVICE;
 
-		/* use the new buffer we have */
-		old_request_buffer = srb->request_buffer;
-		srb->request_buffer = us->sensebuf;
-
 		/* set the buffer length for transfer */
 		old_request_bufflen = srb->request_bufflen;
 		srb->request_bufflen = US_SENSE_SIZE;
+
+       	/* use the new buffer we have */
+       	old_request_buffer = srb->request_buffer;
+       	srb->request_buffer = kmalloc(srb->request_bufflen, GFP_KERNEL);
+       	if(srb->request_buffer == NULL)  {
+       		US_DEBUGP("-- auto-sense aborted - kmalloc failed\n");
+			goto Handle_Errors;
+       	}
 
 		/* set up for no scatter-gather use */
 		old_sg = srb->use_sg;
@@ -628,7 +632,8 @@ void usb_stor_invoke_transport(struct scsi_cmnd *srb, struct us_data *us)
 		temp_result = us->transport(us->srb, us);
 
 		/* let's clean up right away */
-		memcpy(srb->sense_buffer, us->sensebuf, US_SENSE_SIZE);
+		memcpy(srb->sense_buffer, srb->request_buffer, US_SENSE_SIZE);
+		kfree(srb->request_buffer);
 		srb->resid = old_resid;
 		srb->request_buffer = old_request_buffer;
 		srb->request_bufflen = old_request_bufflen;

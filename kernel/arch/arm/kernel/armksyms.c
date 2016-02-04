@@ -116,6 +116,8 @@ EXPORT_SYMBOL(__strncpy_from_user);
 #ifdef CONFIG_MMU
 EXPORT_SYMBOL(__copy_from_user);
 EXPORT_SYMBOL(__copy_to_user);
+EXPORT_SYMBOL(__arch_copy_from_user);
+EXPORT_SYMBOL(__arch_copy_to_user);
 EXPORT_SYMBOL(__clear_user);
 
 EXPORT_SYMBOL(__get_user_1);

@@ -141,8 +141,7 @@ nf_nat_fn(unsigned int hooknum,
 				/* LOCAL_IN hook doesn't have a chain!  */
 				ret = alloc_null_binding(ct, hooknum);
 			else
-				ret = nf_nat_rule_find(pskb, hooknum, in, out,
-						       ct);
+				ret = nf_nat_rule_find(pskb, hooknum, in, out, ct);
 
 			if (ret != NF_ACCEPT) {
 				return ret;

@@ -37,6 +37,12 @@
 #include <net/netfilter/nf_conntrack_helper.h>
 #include <net/netfilter/nf_conntrack_core.h>
 
+#ifdef CONFIG_MV_ETH_NFP_NAT_SUPPORT
+extern int fp_nat_db_init(u32 db_size);
+extern int fp_nat_info_delete(u32 src_ip, u32 dst_ip, u16 src_port, u16 dst_port, u8 proto);
+extern int fp_is_nat_confirmed(u32 src_ip, u32 dst_ip, u16 src_port, u16 dst_port, u8 proto);
+#endif /* CONFIG_MV_ETH_NFP_NAT_SUPPORT */
+
 #define NF_CONNTRACK_VERSION	"0.5.0"
 
 #if 0
@@ -351,6 +357,38 @@ static void death_by_timeout(unsigned long ul_conntrack)
 	struct nf_conn *ct = (void *)ul_conntrack;
 	struct nf_conn_help *help = nfct_help(ct);
 	struct nf_conntrack_helper *helper;
+
+#ifdef CONFIG_MV_ETH_NFP_NAT_SUPPORT
+	if (fp_is_nat_confirmed(ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple.src.u3.ip, 
+				ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple.dst.u3.ip, 
+				ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple.src.u.all, 
+				ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple.dst.u.all, 
+				ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple.dst.protonum) || 
+	    fp_is_nat_confirmed(ct->tuplehash[IP_CT_DIR_REPLY].tuple.src.u3.ip, 
+				ct->tuplehash[IP_CT_DIR_REPLY].tuple.dst.u3.ip, 
+				ct->tuplehash[IP_CT_DIR_REPLY].tuple.src.u.all, 
+				ct->tuplehash[IP_CT_DIR_REPLY].tuple.dst.u.all, 
+				ct->tuplehash[IP_CT_DIR_REPLY].tuple.dst.protonum)) {
+
+			/* arbitrary value, but larger than CONFIG_MV_ETH_NFP_AGING_TIMER */
+			ct->timeout.expires = jiffies + ((CONFIG_MV_ETH_NFP_AGING_TIMER * 2) * HZ);  
+			add_timer(&ct->timeout);
+			return;
+	}
+	else {
+		fp_nat_info_delete(	ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple.src.u3.ip, 
+					ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple.dst.u3.ip, 
+					ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple.src.u.all, 
+					ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple.dst.u.all, 
+					ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple.dst.protonum);
+
+		fp_nat_info_delete(	ct->tuplehash[IP_CT_DIR_REPLY].tuple.src.u3.ip, 
+					ct->tuplehash[IP_CT_DIR_REPLY].tuple.dst.u3.ip, 
+					ct->tuplehash[IP_CT_DIR_REPLY].tuple.src.u.all, 
+					ct->tuplehash[IP_CT_DIR_REPLY].tuple.dst.u.all, 
+					ct->tuplehash[IP_CT_DIR_REPLY].tuple.dst.protonum);
+	}
+#endif /* CONFIG_MV_ETH_NFP_NAT_SUPPORT */
 
 	if (help) {
 		rcu_read_lock();
@@ -832,7 +870,6 @@ nf_conntrack_in(int pf, unsigned int hooknum, struct sk_buff **pskb)
 		NF_CT_STAT_INC_ATOMIC(invalid);
 		return -ret;
 	}
-
 	ct = resolve_normal_ct(*pskb, dataoff, pf, protonum, l3proto, l4proto,
 			       &set_reply, &ctinfo);
 	if (!ct) {
@@ -1277,6 +1314,10 @@ int __init nf_conntrack_init(void)
 	atomic_set(&nf_conntrack_untracked.ct_general.use, 1);
 	/*  - and look it like as a confirmed connection */
 	set_bit(IPS_CONFIRMED_BIT, &nf_conntrack_untracked.status);
+
+#ifdef CONFIG_MV_ETH_NFP_NAT_SUPPORT
+	fp_nat_db_init(nf_conntrack_htable_size);
+#endif
 
 	return ret;
 

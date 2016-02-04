@@ -164,7 +164,7 @@ static inline dma_addr_t
 dma_map_single(struct device *dev, void *cpu_addr, size_t size,
 	       enum dma_data_direction dir)
 {
-	if (!arch_is_coherent())
+	if (!arch_is_coherent() && size)
 		consistent_sync(cpu_addr, size, dir);
 
 	return virt_to_dma(dev, (unsigned long)cpu_addr);
@@ -210,12 +210,37 @@ dma_map_page(struct device *dev, struct page *page,
  * After this call, reads by the CPU to the buffer are guaranteed to see
  * whatever the device wrote there.
  */
+
+#ifdef	CONFIG_MV_SP_I_FTCH_DB_INV 
+extern void mv_l2_inv_range(const void *start, const void *end);
+static inline void mv_l2_sync(const void *start, size_t size, int direction)
+{
+	const void *end = start + size;
+
+	BUG_ON(!virt_addr_valid(start) || !virt_addr_valid(end - 1));
+
+	switch (direction) {
+	case DMA_FROM_DEVICE:		/*  */
+	case DMA_BIDIRECTIONAL:		/*  */
+		mv_l2_inv_range(start, end);
+		break;
+	case DMA_TO_DEVICE:		/* */
+		break;
+	default:
+		BUG();
+	}
+}
+#endif
+
+
 #ifndef CONFIG_DMABOUNCE
 static inline void
 dma_unmap_single(struct device *dev, dma_addr_t handle, size_t size,
 		 enum dma_data_direction dir)
 {
-	/* nothing to do */
+#ifdef CONFIG_MV_SP_I_FTCH_DB_INV
+	mv_l2_sync(phys_to_virt(handle), size, dir);
+#endif
 }
 #else
 extern void dma_unmap_single(struct device *, dma_addr_t, size_t, enum dma_data_direction);
@@ -303,8 +328,20 @@ static inline void
 dma_unmap_sg(struct device *dev, struct scatterlist *sg, int nents,
 	     enum dma_data_direction dir)
 {
+#ifdef CONFIG_MV_SP_I_FTCH_DB_INV
+	int i;
+ 
+	for (i = 0; i < nents; i++, sg++) {
+		char *virt;
 
-	/* nothing to do */
+		sg->dma_address = page_to_dma(dev, sg->page) + sg->offset;
+		virt = page_address(sg->page) + sg->offset;
+
+		mv_l2_sync(virt, sg->length, dir);
+	}
+
+	return;
+#endif
 }
 #else
 extern void dma_unmap_sg(struct device *, struct scatterlist *, int, enum dma_data_direction);

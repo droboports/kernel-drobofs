@@ -1,17 +1,18 @@
 /*****************************************************************************
  *
  * Name:	skgepnm2.h
- * Project:	GEnesis, PCI Gigabit Ethernet Adapter
- * Version:	$Revision: 1.36 $
- * Date:	$Date: 2003/05/23 12:45:13 $
+ * Project:	Gigabit Ethernet Adapters, PNMI-Module
+ * Version:	$Revision: 2.6 $
+ * Date:	$Date: 2007/01/17 15:15:23 $
  * Purpose:	Defines for Private Network Management Interface
  *
  ****************************************************************************/
 
 /******************************************************************************
  *
+ *	LICENSE:
  *	(C)Copyright 1998-2002 SysKonnect GmbH.
- *	(C)Copyright 2002-2003 Marvell.
+ *	(C)Copyright 2002-2007 Marvell.
  *
  *	This program is free software; you can redistribute it and/or modify
  *	it under the terms of the GNU General Public License as published by
@@ -19,6 +20,7 @@
  *	(at your option) any later version.
  *
  *	The information in this file is provided "AS IS" without warranty.
+ *	/LICENSE
  *
  ******************************************************************************/
 
@@ -28,10 +30,15 @@
 /*
  * General definitions
  */
-#define SK_PNMI_CHIPSET_XMAC	1	/* XMAC11800FP */
-#define SK_PNMI_CHIPSET_YUKON	2	/* YUKON */
+#define SK_PNMI_CHIPSET_XMAC		1	/* XMAC11800FP */
+#define SK_PNMI_CHIPSET_YUKON		2	/* YUKON */
+#define SK_PNMI_CHIPSET_YUKON_LITE	3	/* YUKON-Lite (Rev. A1-A3) */
+#define SK_PNMI_CHIPSET_YUKON_LP	4	/* YUKON-LP */
+#define SK_PNMI_CHIPSET_YUKON_XL	5	/* YUKON-2 XL */
+#define SK_PNMI_CHIPSET_YUKON_EC	6	/* YUKON-2 EC */
+#define SK_PNMI_CHIPSET_YUKON_FE	7	/* YUKON-2 FE */
 
-#define	SK_PNMI_BUS_PCI		1	/* PCI bus*/
+#define SK_PNMI_BUS_PCI		1	/* PCI bus*/
 
 /*
  * Actions
@@ -70,9 +77,9 @@
 /*
  * VCT internal status values
  */
-#define SK_PNMI_VCT_PENDING	32
-#define SK_PNMI_VCT_TEST_DONE	64
-#define SK_PNMI_VCT_LINK	128
+#define SK_PNMI_VCT_PENDING		0x20
+#define SK_PNMI_VCT_TEST_DONE	0x40
+#define SK_PNMI_VCT_LINK		0x80
 
 /*
  * Internal table definitions
@@ -147,7 +154,7 @@ enum SK_MACSTATS {
 	SK_PNMI_HTX_SYNC,
 	SK_PNMI_HTX_SYNC_OCTET,
 	SK_PNMI_HTX_RESERVED,
-	
+
 	SK_PNMI_HRX,
 	SK_PNMI_HRX_OCTET,
 	SK_PNMI_HRX_OCTETHIGH	= SK_PNMI_HRX_OCTET,
@@ -185,9 +192,9 @@ enum SK_MACSTATS {
 	SK_PNMI_HRX_1023,
 	SK_PNMI_HRX_MAX,
 	SK_PNMI_HRX_LONGFRAMES,
-	
+
 	SK_PNMI_HRX_RESERVED,
-	
+
 	SK_PNMI_MAX_IDX		/* NOTE: Ensure SK_PNMI_CNT_NO is set to this value */
 };
 
@@ -196,7 +203,7 @@ enum SK_MACSTATS {
  */
 typedef struct s_PnmiStatAddr {
 	SK_U16		Reg;		/* MAC register containing the value */
-	SK_BOOL		GetOffset;	/* TRUE: Offset managed by PNMI (call GetStatVal())*/
+	SK_BOOL		GetOffset;	/* TRUE: Offset managed by PNMI (GetStatVal()) */
 } SK_PNMI_STATADDR;
 
 
@@ -323,7 +330,7 @@ typedef struct s_PnmiStatAddr {
 						vSt, \
 						pAC->Pnmi.MacUpdatedFlag, \
 						pAC->Pnmi.RlmtUpdatedFlag, \
-						pAC->Pnmi.SirqUpdatedFlag))}}
+						pAC->Pnmi.SirqUpdatedFlag));}}
 
 #else	/* !DEBUG */
 

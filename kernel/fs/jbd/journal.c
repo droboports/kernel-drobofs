@@ -111,11 +111,21 @@ static void commit_timeout(unsigned long __data)
  *    the disk.  Flushing these old buffers to reclaim space in the log is
  *    known as checkpointing, and this thread is responsible for that job.
  */
+#ifdef CONFIG_MV_GENERIC_NAS_FS
+static const char *journal_dev_name(journal_t *journal, char *buffer);
+extern void msleep(unsigned int msecs);
+#endif
 
 static int kjournald(void *arg)
 {
 	journal_t *journal = arg;
 	transaction_t *transaction;
+
+#ifdef CONFIG_MV_GENERIC_NAS_FS
+    	int         state = SIGUSR2;
+	allow_signal(SIGUSR1);
+	allow_signal(SIGUSR2);
+#endif
 
 	/*
 	 * Set up an interval timer which can be used to trigger a commit wakeup
@@ -137,6 +147,39 @@ static int kjournald(void *arg)
 	spin_lock(&journal->j_state_lock);
 
 loop:
+#ifdef CONFIG_MV_GENERIC_NAS_FS
+    if (signal_pending(current))
+    {
+        siginfo_t       info;
+        unsigned long   signr;
+
+        signr = dequeue_signal_lock(current, &current->blocked, &info);
+
+        switch(signr)
+        {
+            case  SIGUSR1:
+                state = SIGUSR1;
+                jbd_debug(1, "%s suspending\n", dname);
+                msleep(1000);
+                goto loop;
+                break;
+    
+            case SIGUSR2:
+                jbd_debug(1, "%s wakes up\n", dname);
+                state = SIGUSR2;
+                break;
+        }
+    }
+    else
+    {
+        if (state == SIGUSR1)
+        {
+            msleep(1000);
+            goto loop;
+        }
+    }
+#endif
+
 	if (journal->j_flags & JFS_UNMOUNT)
 		goto end_loop;
 
@@ -213,8 +256,15 @@ end_loop:
 static int journal_start_thread(journal_t *journal)
 {
 	struct task_struct *t;
+#ifdef CONFIG_MV_GENERIC_NAS_FS
+	char        b[BDEVNAME_SIZE];
+	char        dname[10+BDEVNAME_SIZE];
 
+	sprintf(dname, "kjournald-%s", journal_dev_name(journal, b));
+	t = kthread_run(kjournald, journal, dname);
+#else
 	t = kthread_run(kjournald, journal, "kjournald");
+#endif
 	if (IS_ERR(t))
 		return PTR_ERR(t);
 

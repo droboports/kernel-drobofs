@@ -1166,6 +1166,7 @@ struct page *follow_page(struct vm_area_struct *, unsigned long address,
 #define FOLL_TOUCH	0x02	/* mark page accessed */
 #define FOLL_GET	0x04	/* do get_page on page */
 #define FOLL_ANON	0x08	/* give ZERO_PAGE if no pgtable */
+#define FOLL_PTE_EXIST  0x100   /* */
 
 typedef int (*pte_fn_t)(pte_t *pte, struct page *pmd_page, unsigned long addr,
 			void *data);

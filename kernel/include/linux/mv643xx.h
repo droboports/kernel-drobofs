@@ -18,6 +18,7 @@
 #include <asm/marvell.h>
 #endif
 #include <asm/types.h>
+#include <linux/mv643xx_i2c.h>
 
 /****************************************/
 /* Processor Address Space              */
@@ -980,7 +981,6 @@
 /* I2C Registers                        */
 /****************************************/
 
-#define MV64XXX_I2C_CTLR_NAME					"mv64xxx_i2c"
 #define MV64XXX_I2C_OFFSET                                          0xc000
 #define MV64XXX_I2C_REG_BLOCK_SIZE                                  0x0020
 
@@ -1083,14 +1083,6 @@ struct mpsc_pdata {
 	u8	brg_can_tune;
 	u8	brg_clk_src;
 	u32	brg_clk_freq;
-};
-
-/* i2c Platform Device, Driver Data */
-struct mv64xxx_i2c_pdata {
-	u32	freq_m;
-	u32	freq_n;
-	u32	timeout;	/* In milliseconds */
-	u32	retries;
 };
 
 /* These macros describe Ethernet Port configuration reg (Px_cR) bits */

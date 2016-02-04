@@ -325,7 +325,7 @@ static int ehci_pci_resume(struct usb_hcd *hcd)
 }
 #endif
 
-static const struct hc_driver ehci_pci_hc_driver = {
+const struct hc_driver ehci_pci_hc_driver = {
 	.description =		hcd_name,
 	.product_desc =		"EHCI Host Controller",
 	.hcd_priv_size =	sizeof(struct ehci_hcd),

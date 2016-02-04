@@ -11,6 +11,9 @@ struct scatterlist {
 	unsigned int	length;		/* length			 */
 };
 
+#define sg_virt_addr(sg) ((unsigned long)(page_address((sg)->page)	\
+					  + (sg)->offset))
+
 /*
  * These macros should be used after a pci_map_sg call has been done
  * to get bus addresses of each of the SG entries and their lengths.

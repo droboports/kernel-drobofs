@@ -35,12 +35,14 @@
 #include <linux/namei.h>
 #include <linux/quotaops.h>
 #include <linux/seq_file.h>
+#include <linux/crc16.h> /* NC */
 
 #include <asm/uaccess.h>
 
 #include "xattr.h"
 #include "acl.h"
 #include "namei.h"
+#include "group.h" /* NC */
 
 static int ext3_load_journal(struct super_block *, struct ext3_super_block *,
 			     unsigned long journal_devnum);
@@ -1167,6 +1169,39 @@ static int ext3_setup_super(struct super_block *sb, struct ext3_super_block *es,
 	return res;
 }
 
+/* NC START */
+__le16 ext3_group_desc_csum(struct ext3_sb_info *sbi, __u32 block_group,
+                           struct ext3_group_desc *gdp)
+{
+       __u16 crc = 0;
+
+       if (sbi->s_es->s_feature_ro_compat &
+           cpu_to_le32(EXT3_FEATURE_RO_COMPAT_GDT_CSUM)) {
+               int offset = offsetof(struct ext3_group_desc, bg_checksum);
+               __le32 le_group = cpu_to_le32(block_group);
+
+               crc = crc16(~0, sbi->s_es->s_uuid, sizeof(sbi->s_es->s_uuid));
+               crc = crc16(crc, (__u8 *)&le_group, sizeof(le_group));
+               crc = crc16(crc, (__u8 *)gdp, offset);
+               offset += sizeof(gdp->bg_checksum); /* skip checksum */
+               /* NC removed 64BIT specific stuff */
+       }
+
+       return cpu_to_le16(crc);
+}
+
+int ext3_group_desc_csum_verify(struct ext3_sb_info *sbi, __u32 block_group,
+                               struct ext3_group_desc *gdp)
+{
+       if ((sbi->s_es->s_feature_ro_compat &
+            cpu_to_le32(EXT3_FEATURE_RO_COMPAT_GDT_CSUM)) &&
+           (gdp->bg_checksum != ext3_group_desc_csum(sbi, block_group, gdp)))
+               return 0;
+
+       return 1;
+}
+/* NC END */
+
 /* Called at mount-time, super-block is locked */
 static int ext3_check_descriptors (struct super_block * sb)
 {
@@ -1221,6 +1256,18 @@ static int ext3_check_descriptors (struct super_block * sb)
 					le32_to_cpu(gdp->bg_inode_table));
 			return 0;
 		}
+    /* NC START */
+		ext3_lock_group(sb, i);
+    if (!ext3_group_desc_csum_verify(sbi, i, gdp)) {
+      ext3_error(sb, __FUNCTION__,
+                 "Checksum for group %d failed (%u!=%u)\n", i,
+                 le16_to_cpu(ext3_group_desc_csum(sbi, i,
+                                                  gdp)),
+                 le16_to_cpu(gdp->bg_checksum));
+      return 0;
+    }
+    ext3_unlock_group(sb, i);
+    /* NC END */
 		first_block += EXT3_BLOCKS_PER_GROUP(sb);
 		gdp++;
 	}

@@ -425,6 +425,18 @@ __setup_mmu:	sub	r3, r4, #16384		@ Page directory size
 __armv4_mmu_cache_on:
 		mov	r12, lr
 		bl	__setup_mmu
+#ifdef CONFIG_L2_CACHE_ENABLE
+		/* Cancel L2 prefetch */
+		mrc	p15, 1, r0, c15, c1, 0	@ Read r15 register
+		orr	r0, #0x01000000		@ No prefetching
+		mcr	p15, 1, r0, c15, c1, 0	@ Write r15 register
+/*
+ * In this step, the I/DCaches are closed, but L2 cache might be present 
+ * containing valid data (from u-boot). We do not assume u-boot invalidates L2, 
+ * so we do it ourselves
+ */
+		mcr	p15, 1, r0, c15, c11, 0	@ Invalidate whole L2 
+#endif
 		mov	r0, #0
 		mcr	p15, 0, r0, c7, c10, 4	@ drain write buffer
 		mcr	p15, 0, r0, c8, c7, 0	@ flush I,D TLBs
@@ -752,10 +764,20 @@ no_cache_id:
 1:		ldr	r3, [r1], r11		@ s/w flush D cache
 		teq	r1, r2
 		bne	1b
+#ifdef CONFIG_ARCH_FEROCEON
+                /* 4 way cache, load of new cache lines won't be enough. */
+2:              mrc     p15, 0, r15, c7, c14, 3         @ test,clean,invalidate
+                bne     2b
+#endif
 
 		mcr	p15, 0, r1, c7, c5, 0	@ flush I cache
 		mcr	p15, 0, r1, c7, c6, 0	@ flush D cache
 		mcr	p15, 0, r1, c7, c10, 4	@ drain WB
+#ifdef CONFIG_L2_CACHE_ENABLE
+		mcr	p15, 1, r1, c15, c9, 0	@ clean entire L2 cache
+		mcr	p15, 1, r1, c15, c11, 0	@ Invalidate entire L2 cache
+		mcr	p15, 0, r1, c7, c10, 4	@ drain WB
+#endif
 		mov	pc, lr
 
 __armv3_mmu_cache_flush:

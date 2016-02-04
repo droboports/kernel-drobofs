@@ -1,23 +1,25 @@
 /******************************************************************************
  *
  * Name:	skvpd.c
- * Project:	GEnesis, PCI Gigabit Ethernet Adapter
- * Version:	$Revision: 1.37 $
- * Date:	$Date: 2003/01/13 10:42:45 $
- * Purpose:	Shared software to read and write VPD data
+ * Project:	Gigabit Ethernet Adapters, VPD-Module
+ * Version:	$Revision: 2.12 $
+ * Date:	$Date: 2007/06/27 14:23:55 $
+ * Purpose:	Shared software to read and write VPD
  *
  ******************************************************************************/
 
 /******************************************************************************
  *
- *	(C)Copyright 1998-2003 SysKonnect GmbH.
+ *	LICENSE:
+ *	(C)Copyright 1998-2002 SysKonnect.
+ *	(C)Copyright 2002-2007 Marvell.
  *
  *	This program is free software; you can redistribute it and/or modify
  *	it under the terms of the GNU General Public License as published by
  *	the Free Software Foundation; either version 2 of the License, or
  *	(at your option) any later version.
- *
  *	The information in this file is provided "AS IS" without warranty.
+ *	/LICENSE
  *
  ******************************************************************************/
 
@@ -25,12 +27,18 @@
 	Please refer skvpd.txt for information how to include this module
  */
 static const char SysKonnectFileId[] =
-	"@(#)$Id: skvpd.c,v 1.37 2003/01/13 10:42:45 rschmidt Exp $ (C) SK";
+	"@(#) $Id: skvpd.c,v 2.12 2007/06/27 14:23:55 malthoff Exp $ (C) Marvell.";
 
 #include "h/skdrv1st.h"
 #include "h/sktypes.h"
 #include "h/skdebug.h"
 #include "h/skdrv2nd.h"
+
+#define SPI_Y2_IS_BUSY(w)		((w)&(1L<<30))
+#define SPI_Y2_CMD_MASK			(0x07L<<16)		/* SPI EPROM command mask  */
+#define SPI_Y2_RD				(0x09L<<16)		/* SPI EPROM READ INSTRUCTION */
+
+
 
 /*
  * Static functions
@@ -52,18 +60,23 @@ static SK_VPD_PARA	*vpd_find_para();
  *		error	exit(9) with a error message
  */
 static int VpdWait(
-SK_AC	*pAC,	/* Adapters context */
+SK_AC	*pAC,	/* Adapters Context */
 SK_IOC	IoC,	/* IO Context */
 int		event)	/* event to wait for (VPD_READ / VPD_write) completion*/
 {
-	SK_U64	start_time;
+	SK_I64	start_time;
+	SK_I64	curr_time;
 	SK_U16	state;
 
-	SK_DBG_MSG(pAC,SK_DBGMOD_VPD, SK_DBGCAT_CTRL,
-		("VPD wait for %s\n", event?"Write":"Read"));
-	start_time = SkOsGetTime(pAC);
+	SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_CTRL,
+		("VPD wait for %s\n", event ? "Write" : "Read"));
+
+	start_time = (SK_I64)SkOsGetTime(pAC);
+
 	do {
-		if (SkOsGetTime(pAC) - start_time > SK_TICKS_PER_SEC) {
+		curr_time = (SK_I64)SkOsGetTime(pAC);
+
+		if (curr_time - start_time > SK_TICKS_PER_SEC) {
 
 			/* Bug fix AF: Thu Mar 28 2002
 			 * Do not call: VPD_STOP(pAC, IoC);
@@ -81,18 +94,58 @@ int		event)	/* event to wait for (VPD_READ / VPD_write) completion*/
 				("ERROR:VPD wait timeout\n"));
 			return(1);
 		}
-		
+
 		VPD_IN16(pAC, IoC, PCI_VPD_ADR_REG, &state);
-		
+
 		SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_CTRL,
-			("state = %x, event %x\n",state,event));
-	} while((int)(state & PCI_VPD_FLAG) == event);
+			("state = %x, event %x\n", state, event));
+
+	} while ((int)(state & PCI_VPD_FLAG) == event);
 
 	return(0);
 }
 
-#ifdef SKDIAG
+#ifndef SK_SLIM		/* needs to be enabled for ASF w/o EEPORM */
+/******************************************************************************
+ *
+ * 	SpiWait()	- waits for a SPI read completion
+ *
+ * Descritption:
+ *	Waits for a completion of a SPI read transfer
+ *	The SPI transfer must complete within one SK_TICKS_PER_SEC
+ *
+ * returns	0:	success, transfer completes
+ *		error	exit(9) with a error message
+ */
+static int SpiWait(
+SK_AC	*pAC,	/* Adapters Context */
+SK_IOC	IoC)	/* IO Context */
+{
+	SK_I64	start_time;
+	SK_I64	curr_time;
+	SK_U32	stat;
 
+	SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_CTRL, ("SPI wait for"));
+
+	start_time = (SK_I64)SkOsGetTime(pAC);
+
+	do {
+		curr_time = (SK_I64)SkOsGetTime(pAC);
+
+		SK_IN32(IoC, SPI_CTRL, &stat);
+
+		if (SPI_Y2_IS_BUSY(stat) && curr_time - start_time > SK_TICKS_PER_SEC) {
+			SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_FATAL | SK_DBGCAT_ERR,
+				("ERROR:SPI wait timeout\n"));
+			return(1);
+		}
+	} while (SPI_Y2_IS_BUSY(stat));
+
+	return(0);
+}
+#endif /* !SK_SLIM */
+
+#ifdef SK_DIAG
 /*
  * Read the dword at address 'addr' from the VPD EEPROM.
  *
@@ -104,7 +157,7 @@ int		event)	/* event to wait for (VPD_READ / VPD_write) completion*/
  * Returns the data read.
  */
 SK_U32 VpdReadDWord(
-SK_AC	*pAC,	/* Adapters context */
+SK_AC	*pAC,	/* Adapters Context */
 SK_IOC	IoC,	/* IO Context */
 int		addr)	/* VPD address */
 {
@@ -112,7 +165,7 @@ int		addr)	/* VPD address */
 
 	/* start VPD read */
 	SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_CTRL,
-		("VPD read dword at 0x%x\n",addr));
+		("VPD read dword at 0x%x\n", addr));
 	addr &= ~VPD_WRITE;		/* ensure the R/W bit is set to read */
 
 	VPD_OUT16(pAC, IoC, PCI_VPD_ADR_REG, (SK_U16)addr);
@@ -124,14 +177,73 @@ int		addr)	/* VPD address */
 	Rtv = 0;
 
 	VPD_IN32(pAC, IoC, PCI_VPD_DAT_REG, &Rtv);
-	
+
 	SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_CTRL,
-		("VPD read dword data = 0x%x\n",Rtv));
+		("VPD read dword data = 0x%x\n", Rtv));
 	return(Rtv);
 }
+#endif /* SK_DIAG */
 
-#endif	/* SKDIAG */
 
+#ifdef XXX
+/*
+	Write the dword 'data' at address 'addr' into the VPD EEPROM, and
+	verify that the data is written.
+
+ Needed Time:
+
+.				MIN		MAX
+. -------------------------------------------------------------------
+. write				1.8 ms		3.6 ms
+. internal write cyles		0.7 ms		7.0 ms
+. -------------------------------------------------------------------
+. over all program time	 	2.5 ms		10.6 ms
+. read				1.3 ms		2.6 ms
+. -------------------------------------------------------------------
+. over all 			3.8 ms		13.2 ms
+.
+
+ Returns	0:	success
+			1:	error,	I2C transfer does not terminate
+			2:	error,	data verify error
+
+ */
+static int VpdWriteDWord(
+SK_AC	*pAC,	/* Adapters Context */
+SK_IOC	IoC,	/* IO Context */
+int		addr,	/* VPD address */
+SK_U32	data)	/* VPD data to write */
+{
+	/* start VPD write */
+	/* Don't swap here, it's a data stream of bytes */
+	SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_CTRL,
+		("VPD write dword at addr 0x%x, data = 0x%x\n", addr, data));
+	VPD_OUT32(pAC, IoC, PCI_VPD_DAT_REG, (SK_U32)data);
+	/* But do it here */
+	addr |= VPD_WRITE;
+
+	VPD_OUT16(pAC, IoC, PCI_VPD_ADR_REG, (SK_U16)(addr | VPD_WRITE));
+
+	/* this may take up to 10,6 ms */
+	if (VpdWait(pAC, IoC, VPD_WRITE)) {
+		SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_ERR,
+			("Write Timed Out\n"));
+		return(1);
+	};
+
+	/* verify data */
+	if (VpdReadDWord(pAC, IoC, addr) != data) {
+		SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_ERR | SK_DBGCAT_FATAL,
+			("Data Verify Error\n"));
+		return(2);
+	}
+	return(0);
+}	/* VpdWriteDWord */
+
+#endif /* XXX */
+
+
+#ifndef SK_SLIM
 /*
  *	Read one Stream of 'len' bytes of VPD data, starting at 'addr' from
  *	or to the I2C EEPROM.
@@ -139,7 +251,7 @@ int		addr)	/* VPD address */
  * Returns number of bytes read / written.
  */
 static int VpdWriteStream(
-SK_AC	*pAC,	/* Adapters context */
+SK_AC	*pAC,	/* Adapters Context */
 SK_IOC	IoC,	/* IO Context */
 char	*buf,	/* data buffer */
 int		Addr,	/* VPD start address */
@@ -156,7 +268,7 @@ int		Len)	/* number of bytes to read / to write */
 	pComp = (SK_U8 *) buf;
 
 	for (i = 0; i < Len; i++, buf++) {
-		if ((i%sizeof(SK_U32)) == 0) {
+		if ((i % SZ_LONG) == 0) {
 			/*
 			 * At the begin of each cycle read the Data Reg
 			 * So it is initialized even if only a few bytes
@@ -174,14 +286,13 @@ int		Len)	/* number of bytes to read / to write */
 			}
 		}
 
-		/* Write current Byte */
-		VPD_OUT8(pAC, IoC, PCI_VPD_DAT_REG + (i%sizeof(SK_U32)),
-				*(SK_U8*)buf);
+		/* Write current byte */
+		VPD_OUT8(pAC, IoC, PCI_VPD_DAT_REG + (i % SZ_LONG), *(SK_U8 *)buf);
 
-		if (((i%sizeof(SK_U32)) == 3) || (i == (Len - 1))) {
+		if (((i % SZ_LONG) == 3) || (i == (Len - 1))) {
 			/* New Address needs to be written to VPD_ADDR reg */
 			AdrReg = (SK_U16) Addr;
-			Addr += sizeof(SK_U32);
+			Addr += SZ_LONG;
 			AdrReg |= VPD_WRITE;	/* WRITE operation */
 
 			VPD_OUT16(pAC, IoC, PCI_VPD_ADR_REG, AdrReg);
@@ -191,7 +302,7 @@ int		Len)	/* number of bytes to read / to write */
 			if (Rtv != 0) {
 				SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_ERR,
 					("Write Timed Out\n"));
-				return(i - (i%sizeof(SK_U32)));
+				return(i - (i % SZ_LONG));
 			}
 
 			/*
@@ -206,18 +317,18 @@ int		Len)	/* number of bytes to read / to write */
 			if (Rtv != 0) {
 				SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_ERR,
 					("Verify Timed Out\n"));
-				return(i - (i%sizeof(SK_U32)));
+				return(i - (i % SZ_LONG));
 			}
 
-			for (j = 0; j <= (int)(i%sizeof(SK_U32)); j++, pComp++) {
-				
+			for (j = 0; j <= (int)(i % SZ_LONG); j++, pComp++) {
+
 				VPD_IN8(pAC, IoC, PCI_VPD_DAT_REG + j, &Data);
-				
+
 				if (Data != *pComp) {
 					/* Verify Error */
 					SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_ERR,
 						("WriteStream Verify Error\n"));
-					return(i - (i%sizeof(SK_U32)) + j);
+					return(i - (i % SZ_LONG) + j);
 				}
 			}
 		}
@@ -225,7 +336,7 @@ int		Len)	/* number of bytes to read / to write */
 
 	return(Len);
 }
-	
+#endif /* !SK_SLIM */
 
 /*
  *	Read one Stream of 'len' bytes of VPD data, starting at 'addr' from
@@ -234,7 +345,7 @@ int		Len)	/* number of bytes to read / to write */
  * Returns number of bytes read / written.
  */
 static int VpdReadStream(
-SK_AC	*pAC,	/* Adapters context */
+SK_AC	*pAC,	/* Adapters Context */
 SK_IOC	IoC,	/* IO Context */
 char	*buf,	/* data buffer */
 int		Addr,	/* VPD start address */
@@ -245,10 +356,10 @@ int		Len)	/* number of bytes to read / to write */
 	int		Rtv;
 
 	for (i = 0; i < Len; i++, buf++) {
-		if ((i%sizeof(SK_U32)) == 0) {
+		if ((i % SZ_LONG) == 0) {
 			/* New Address needs to be written to VPD_ADDR reg */
 			AdrReg = (SK_U16) Addr;
-			Addr += sizeof(SK_U32);
+			Addr += SZ_LONG;
 			AdrReg &= ~VPD_WRITE;	/* READ operation */
 
 			VPD_OUT16(pAC, IoC, PCI_VPD_ADR_REG, AdrReg);
@@ -259,12 +370,12 @@ int		Len)	/* number of bytes to read / to write */
 				return(i);
 			}
 		}
-		VPD_IN8(pAC, IoC, PCI_VPD_DAT_REG + (i%sizeof(SK_U32)),
-			(SK_U8 *)buf);
+		VPD_IN8(pAC, IoC, PCI_VPD_DAT_REG + (i % SZ_LONG), (SK_U8 *)buf);
 	}
 
 	return(Len);
 }
+
 
 /*
  *	Read ore writes 'len' bytes of VPD data, starting at 'addr' from
@@ -273,7 +384,7 @@ int		Len)	/* number of bytes to read / to write */
  * Returns number of bytes read / written.
  */
 static int VpdTransferBlock(
-SK_AC	*pAC,	/* Adapters context */
+SK_AC	*pAC,	/* Adapters Context */
 SK_IOC	IoC,	/* IO Context */
 char	*buf,	/* data buffer */
 int		addr,	/* VPD start address */
@@ -287,18 +398,19 @@ int		dir)	/* transfer direction may be VPD_READ or VPD_WRITE */
 		("VPD %s block, addr = 0x%x, len = %d\n",
 		dir ? "write" : "read", addr, len));
 
-	if (len == 0)
+	if (len == 0) {
 		return(0);
+	}
 
 	vpd_rom_size = pAC->vpd.rom_size;
-	
+
 	if (addr > vpd_rom_size - 4) {
 		SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_ERR | SK_DBGCAT_FATAL,
 			("Address error: 0x%x, exp. < 0x%x\n",
 			addr, vpd_rom_size - 4));
 		return(0);
 	}
-	
+
 	if (addr + len > vpd_rom_size) {
 		len = vpd_rom_size - addr;
 		SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_ERR,
@@ -308,14 +420,94 @@ int		dir)	/* transfer direction may be VPD_READ or VPD_WRITE */
 	if (dir == VPD_READ) {
 		Rtv = VpdReadStream(pAC, IoC, buf, addr, len);
 	}
+#ifndef SK_SLIM
 	else {
 		Rtv = VpdWriteStream(pAC, IoC, buf, addr, len);
 	}
+#endif /* !SK_SLIM */
 
 	return(Rtv);
 }
 
-#ifdef SKDIAG
+#ifndef SK_SLIM		/* needs to be enabled for ASF w/o EEPROM */
+/******************************************************************************
+ *
+ *	SpiReadBlock()	-	Read VPD data from SPI flash
+ *
+ * Description:
+ *	Read 'len' bytes of VPD data, starting at 'addr' from the SPI flash.
+ *	If the device doesn't have an EEPROM. The data VPD data is stored in the
+ *	SPI flash and is read only.
+ *
+ * Returns:
+ *	number of read bytes
+ */
+static int SpiReadBlock(
+SK_AC	*pAC,	/* Adapters Context */
+SK_IOC	IoC,	/* IO Context */
+char	*buf,	/* data buffer */
+int		addr,	/* VPD start address */
+int		len)	/* number of bytes to read / to write */
+{
+	int		vpd_rom_size;
+	int		i;
+	union {
+		SK_U32	RegVal;
+		SK_U8	Byte[4];
+	} uBuf;
+	SK_U32	SpiCtrlReg;
+
+	SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_CTRL,
+		("VPD SPI read block, addr = 0x%x, len = %d\n", addr, len));
+
+	if (len == 0) {
+		return(0);
+	}
+
+	vpd_rom_size = pAC->vpd.rom_size;
+
+	if (addr > vpd_rom_size - 4) {
+		SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_ERR | SK_DBGCAT_FATAL,
+			("Address error: 0x%x, exp. < 0x%x\n",
+			addr, vpd_rom_size - 4));
+		return(0);
+	}
+
+	if (addr + len > vpd_rom_size) {
+		len = vpd_rom_size - addr;
+		SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_ERR,
+			("Warning: len was cut to %d\n", len));
+	}
+
+	addr += VPD_SPI_ADDR;
+
+	for (i = 0; i < len; i++, buf++) {
+		if ((i % SZ_LONG) == 0) {
+			/* write spi address */
+			SK_OUT32(IoC, SPI_ADDR, addr);
+
+			/* execute spi read command */
+			SK_IN32(IoC, SPI_CTRL, &SpiCtrlReg);
+			SpiCtrlReg &= ~SPI_Y2_CMD_MASK;
+			SpiCtrlReg |= SPI_Y2_RD;
+			SK_OUT32(IoC, SPI_CTRL, SpiCtrlReg);
+
+			/* wait for the SPI to finish RD operation */
+			if (SpiWait(pAC, IoC)) {;
+				break;
+			}
+
+			/* read the returned data */
+			SK_IN32(IoC, SPI_DATA, &uBuf.RegVal);
+
+			addr += 4;
+		}
+		*buf = uBuf.Byte[i % SZ_LONG];
+	}
+
+	return(i);
+}
+#endif /* !SK_SLIM */
 
 /*
  *	Read 'len' bytes of VPD data, starting at 'addr'.
@@ -323,12 +515,16 @@ int		dir)	/* transfer direction may be VPD_READ or VPD_WRITE */
  * Returns number of bytes read.
  */
 int VpdReadBlock(
-SK_AC	*pAC,	/* pAC pointer */
+SK_AC	*pAC,	/* Adapters Context */
 SK_IOC	IoC,	/* IO Context */
 char	*buf,	/* buffer were the data should be stored */
 int		addr,	/* start reading at the VPD address */
 int		len)	/* number of bytes to read */
 {
+	if (pAC->vpd.CfgInSpi) {
+		return(SpiReadBlock(pAC, IoC, buf, addr, len));
+	}
+
 	return(VpdTransferBlock(pAC, IoC, buf, addr, len, VPD_READ));
 }
 
@@ -338,27 +534,33 @@ int		len)	/* number of bytes to read */
  * Returns number of bytes writes.
  */
 int VpdWriteBlock(
-SK_AC	*pAC,	/* pAC pointer */
+SK_AC	*pAC,	/* Adapters Context */
 SK_IOC	IoC,	/* IO Context */
 char	*buf,	/* buffer, holds the data to write */
 int		addr,	/* start writing at the VPD address */
 int		len)	/* number of bytes to write */
 {
-	return(VpdTransferBlock(pAC, IoC, buf, addr, len, VPD_WRITE));
-}
-#endif	/* SKDIAG */
+	if (!pAC->vpd.CfgInSpi) {
+		return(VpdTransferBlock(pAC, IoC, buf, addr, len, VPD_WRITE));
+	}
 
-/*
- * (re)initialize the VPD buffer
+	return(0);		/* not supported */
+}
+
+/******************************************************************************
  *
- * Reads the VPD data from the EEPROM into the VPD buffer.
- * Get the remaining read only and read / write space.
+ *	VpdInit() - (re)initialize the VPD buffer
  *
- * return	0:	success
- *		1:	fatal VPD error
+ * Description:
+ *	Reads the VPD data from the EEPROM into the VPD buffer.
+ *	Get the remaining read only and read / write space.
+ *
+ * Returns:
+ *	0:	success
+ *	1:	fatal VPD error
  */
-static int VpdInit(
-SK_AC	*pAC,	/* Adapters context */
+int VpdInit(
+SK_AC	*pAC,	/* Adapters Context */
 SK_IOC	IoC)	/* IO Context */
 {
 	SK_VPD_PARA *r, rp;	/* RW or RV */
@@ -367,15 +569,33 @@ SK_IOC	IoC)	/* IO Context */
 	int		vpd_size;
 	SK_U16	dev_id;
 	SK_U32	our_reg2;
+	SK_U8	Byte;
 
-	SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_INIT, ("VpdInit .. "));
-	
+	SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_INIT, ("VpdInit ... "));
+
+	if (pAC->GIni.GILevel < SK_INIT_IO) {
+		SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_ERR, ("Wrong Init Level"));
+		return (1);
+	}
+
 	VPD_IN16(pAC, IoC, PCI_DEVICE_ID, &dev_id);
-	
+
+	VPD_IN8(pAC, IoC, PCI_PM_NITEM, &Byte);
+
+	if (!HW_SUP_VPD(pAC)) {
+		SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_INIT, ("VPD not supported"));
+		return (1);
+	}
+
+#ifndef SK_SLIM		/* needs to be enabled for ASF w/o EEPROM */
+	pAC->vpd.CfgInSpi = (Byte != PCI_VPD_CAP_ID && pAC->GIni.GIYukon2) ?
+		SK_TRUE : SK_FALSE;
+#endif	/* !SK_SLIM */
+
 	VPD_IN32(pAC, IoC, PCI_OUR_REG_2, &our_reg2);
-	
+
 	pAC->vpd.rom_size = 256 << ((our_reg2 & PCI_VPD_ROM_SZ) >> 14);
-	
+
 	/*
 	 * this function might get used before the hardware is initialized
 	 * therefore we cannot always trust in GIChipId
@@ -388,6 +608,7 @@ SK_IOC	IoC)	/* IO Context */
 		/* for Yukon the VPD size is always 256 */
 		vpd_size = VPD_SIZE_YUKON;
 	}
+#ifndef SK_SLIM
 	else {
 		/* Genesis uses the maximum ROM size up to 512 for VPD */
 		if (pAC->vpd.rom_size > VPD_SIZE_GENESIS) {
@@ -397,28 +618,25 @@ SK_IOC	IoC)	/* IO Context */
 			vpd_size = pAC->vpd.rom_size;
 		}
 	}
+#endif /* !SK_SLIM */
 
 	/* read the VPD data into the VPD buffer */
-	if (VpdTransferBlock(pAC, IoC, pAC->vpd.vpd_buf, 0, vpd_size, VPD_READ)
-		!= vpd_size) {
-
+	if (VpdReadBlock(pAC, IoC, pAC->vpd.vpd_buf, 0, vpd_size) != vpd_size) {
 		SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_ERR,
 			("Block Read Error\n"));
 		return(1);
 	}
-	
+
 	pAC->vpd.vpd_size = vpd_size;
 
+#ifndef SK_SLIM
 	/* Asus K8V Se Deluxe bugfix. Correct VPD content */
-	/* MBo April 2004 */
-	if (((unsigned char)pAC->vpd.vpd_buf[0x3f] == 0x38) &&
-	    ((unsigned char)pAC->vpd.vpd_buf[0x40] == 0x3c) &&
-	    ((unsigned char)pAC->vpd.vpd_buf[0x41] == 0x45)) {
-		printk("sk98lin: Asus mainboard with buggy VPD? "
-				"Correcting data.\n");
-		pAC->vpd.vpd_buf[0x40] = 0x38;
-	}
+	i = 62;
+	if (!SK_STRNCMP(pAC->vpd.vpd_buf + i, " 8<E", 4)) {
 
+		pAC->vpd.vpd_buf[i + 2] = '8';
+	}
+#endif /* !SK_SLIM */
 
 	/* find the end tag of the RO area */
 	if (!(r = vpd_find_para(pAC, VPD_RV, &rp))) {
@@ -426,9 +644,9 @@ SK_IOC	IoC)	/* IO Context */
 			("Encoding Error: RV Tag not found\n"));
 		return(1);
 	}
-	
+
 	if (r->p_val + r->p_len > pAC->vpd.vpd_buf + vpd_size/2) {
-		SK_DBG_MSG(pAC,SK_DBGMOD_VPD,SK_DBGCAT_ERR | SK_DBGCAT_FATAL,
+		SK_DBG_MSG(pAC, SK_DBGMOD_VPD,SK_DBGCAT_ERR | SK_DBGCAT_FATAL,
 			("Encoding Error: Invalid VPD struct size\n"));
 		return(1);
 	}
@@ -438,7 +656,7 @@ SK_IOC	IoC)	/* IO Context */
 	for (i = 0, x = 0; (unsigned)i <= (unsigned)vpd_size/2 - r->p_len; i++) {
 		x += pAC->vpd.vpd_buf[i];
 	}
-	
+
 	if (x != 0) {
 		/* checksum error */
 		SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_ERR | SK_DBGCAT_FATAL,
@@ -446,20 +664,29 @@ SK_IOC	IoC)	/* IO Context */
 		return(1);
 	}
 
-	/* find and check the end tag of the RW area */
-	if (!(r = vpd_find_para(pAC, VPD_RW, &rp))) {
-		SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_ERR | SK_DBGCAT_FATAL,
-			("Encoding Error: RV Tag not found\n"));
-		return(1);
+#ifndef SK_SLIM		/* needs to be enabled for ASF w/o EEPROM */
+	if (pAC->vpd.CfgInSpi) {
+		pAC->vpd.v.vpd_free_rw = 0;
 	}
-	
-	if (r->p_val < pAC->vpd.vpd_buf + vpd_size/2) {
-		SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_ERR | SK_DBGCAT_FATAL,
-			("Encoding Error: Invalid VPD struct size\n"));
-		return(1);
-	}
-	pAC->vpd.v.vpd_free_rw = r->p_len;
+	else {
+#endif	/* !SK_SLIM */
+		/* find and check the end tag of the RW area */
+		if (!(r = vpd_find_para(pAC, VPD_RW, &rp))) {
+			SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_ERR | SK_DBGCAT_FATAL,
+				("Encoding Error: RV Tag not found\n"));
+			return(1);
+		}
 
+		if (r->p_val < pAC->vpd.vpd_buf + vpd_size/2) {
+			SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_ERR | SK_DBGCAT_FATAL,
+				("Encoding Error: Invalid VPD struct size\n"));
+			return(1);
+		}
+		pAC->vpd.v.vpd_free_rw = r->p_len;
+#ifndef SK_SLIM		/* needs to be enabled for ASF w/o EEPROM */
+	}
+#endif	/* !SK_SLIM */
+	
 	/* everything seems to be ok */
 	if (pAC->GIni.GIChipId != 0) {
 		pAC->vpd.v.vpd_status |= VPD_VALID;
@@ -472,6 +699,7 @@ SK_IOC	IoC)	/* IO Context */
 	return(0);
 }
 
+
 /*
  *	find the Keyword 'key' in the VPD buffer and fills the
  *	parameter struct 'p' with it's values
@@ -480,58 +708,63 @@ SK_IOC	IoC)	/* IO Context */
  *		0:	parameter was not found or VPD encoding error
  */
 static SK_VPD_PARA *vpd_find_para(
-SK_AC		*pAC,	/* common data base */
+SK_AC		*pAC,	/* Adapters Context */
 const char	*key,	/* keyword to find (e.g. "MN") */
-SK_VPD_PARA *p)		/* parameter description struct */
+SK_VPD_PARA	*p)		/* parameter description struct */
 {
 	char *v	;	/* points to VPD buffer */
 	int max;	/* Maximum Number of Iterations */
+	int len;
 
 	v = pAC->vpd.vpd_buf;
 	max = 128;
 
 	SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_CTRL,
-		("VPD find para %s .. ",key));
+		("VPD find para %s .. ", key));
 
 	/* check mandatory resource type ID string (Product Name) */
 	if (*v != (char)RES_ID) {
 		SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_ERR | SK_DBGCAT_FATAL,
 			("Error: 0x%x missing\n", RES_ID));
-		return NULL;
+		return(0);
 	}
 
-	if (strcmp(key, VPD_NAME) == 0) {
-		p->p_len = VPD_GET_RES_LEN(v);
+	len = VPD_GET_RES_LEN(v);
+
+	if (SK_STRCMP(key, VPD_NAME) == 0) {
+		p->p_len = len;
 		p->p_val = VPD_GET_VAL(v);
 		SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_CTRL,
-			("found, len = %d\n", p->p_len));
+			("found, len = %d\n", len));
 		return(p);
 	}
 
-	v += 3 + VPD_GET_RES_LEN(v) + 3;
-	for (;; ) {
-		if (SK_MEMCMP(key,v,2) == 0) {
+	v += 3 + len + 3;
+
+	for ( ; ; ) {
+		if (SK_MEMCMP(key, v, 2) == 0) {
 			p->p_len = VPD_GET_VPD_LEN(v);
 			p->p_val = VPD_GET_VAL(v);
 			SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_CTRL,
-				("found, len = %d\n",p->p_len));
+				("found, len = %d\n", p->p_len));
 			return(p);
 		}
 
 		/* exit when reaching the "RW" Tag or the maximum of itera. */
 		max--;
-		if (SK_MEMCMP(VPD_RW,v,2) == 0 || max == 0) {
+		if (SK_MEMCMP(VPD_RW, v, 2) == 0 || max == 0) {
 			break;
 		}
 
-		if (SK_MEMCMP(VPD_RV,v,2) == 0) {
-			v += 3 + VPD_GET_VPD_LEN(v) + 3;	/* skip VPD-W */
+		len = 3 + VPD_GET_VPD_LEN(v);
+
+		if (SK_MEMCMP(VPD_RV, v, 2) == 0) {
+			len += 3;					/* skip VPD-W */
 		}
-		else {
-			v += 3 + VPD_GET_VPD_LEN(v);
-		}
+		v += len;
+
 		SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_CTRL,
-			("scanning '%c%c' len = %d\n",v[0],v[1],v[2]));
+			("scanning '%c%c' len = %d\n", v[0], v[1], v[2]));
 	}
 
 #ifdef DEBUG
@@ -541,8 +774,9 @@ SK_VPD_PARA *p)		/* parameter description struct */
 			("Key/Len Encoding error\n"));
 	}
 #endif /* DEBUG */
-	return NULL;
+	return(0);
 }
+
 
 /*
  *	Move 'n' bytes. Begin with the last byte if 'n' is > 0,
@@ -558,8 +792,9 @@ int		n)			/* number of bytes the memory block has to be moved */
 	char *p;
 	int i;		/* number of byte copied */
 
-	if (n == 0)
+	if (n == 0) {
 		return;
+	}
 
 	i = (int) (end - start + 1);
 	if (n < 0) {
@@ -578,6 +813,7 @@ int		n)			/* number of bytes the memory block has to be moved */
 	}
 }
 
+
 /*
  *	setup the VPD keyword 'key' at 'ip'.
  *
@@ -594,9 +830,10 @@ char	*ip)		/* inseration point */
 	p = (SK_VPD_KEY *) ip;
 	p->p_key[0] = key[0];
 	p->p_key[1] = key[1];
-	p->p_len = (unsigned char) len;
-	SK_MEMCPY(&p->p_val,buf,len);
+	p->p_len = (unsigned char)len;
+	SK_MEMCPY(&p->p_val, buf, len);
 }
+
 
 /*
  *	Setup the VPD end tag "RV" / "RW".
@@ -606,7 +843,7 @@ char	*ip)		/* inseration point */
  *		1:	encoding error
  */
 static int vpd_mod_endtag(
-SK_AC	*pAC,		/* common data base */
+SK_AC	*pAC,		/* Adapters Context */
 char	*etp)		/* end pointer input position */
 {
 	SK_VPD_KEY *p;
@@ -615,7 +852,7 @@ char	*etp)		/* end pointer input position */
 	int	vpd_size;
 
 	SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_CTRL,
-		("VPD modify endtag at 0x%x = '%c%c'\n",etp,etp[0],etp[1]));
+		("VPD modify endtag at 0x%x = '%c%c'\n", etp, etp[0], etp[1]));
 
 	vpd_size = pAC->vpd.vpd_size;
 
@@ -623,7 +860,7 @@ char	*etp)		/* end pointer input position */
 
 	if (p->p_key[0] != 'R' || (p->p_key[1] != 'V' && p->p_key[1] != 'W')) {
 		/* something wrong here, encoding error */
-		SK_DBG_MSG(pAC,SK_DBGMOD_VPD,SK_DBGCAT_ERR | SK_DBGCAT_FATAL,
+		SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_ERR | SK_DBGCAT_FATAL,
 			("Encoding Error: invalid end tag\n"));
 		return(1);
 	}
@@ -655,6 +892,7 @@ char	*etp)		/* end pointer input position */
 	return(0);
 }
 
+
 /*
  *	Insert a VPD keyword into the VPD buffer.
  *
@@ -669,8 +907,8 @@ char	*etp)		/* end pointer input position */
  *		6:	fatal VPD error
  *
  */
-static int	VpdSetupPara(
-SK_AC	*pAC,		/* common data base */
+int	VpdSetupPara(
+SK_AC	*pAC,		/* Adapters Context */
 const char	*key,	/* keyword to insert */
 const char	*buf,	/* buffer with the keyword value */
 int		len,		/* length of the keyword value */
@@ -687,12 +925,12 @@ int		op)			/* operation to do: ADD_KEY or OWR_KEY */
 	int vpd_size;
 
 	SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_CTRL,
-		("VPD setup para key = %s, val = %s\n",key,buf));
-	
+		("VPD setup para key = %s, val = %s\n", key, buf));
+
 	vpd_size = pAC->vpd.vpd_size;
 
 	rtv = 0;
-	ip = NULL;
+	ip = 0;
 	if (type == VPD_RW_KEY) {
 		/* end tag is "RW" */
 		free = pAC->vpd.v.vpd_free_rw;
@@ -743,7 +981,9 @@ int		op)			/* operation to do: ADD_KEY or OWR_KEY */
 	}
 
 	vpd_move_para(ip + vp.p_len + found, etp+2, len-vp.p_len+head);
+
 	vpd_insert_key(key, buf, len, ip);
+
 	if (vpd_mod_endtag(pAC, etp + len - vp.p_len + head)) {
 		pAC->vpd.v.vpd_status &= ~VPD_VALID;
 		SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_ERR,
@@ -754,7 +994,7 @@ int		op)			/* operation to do: ADD_KEY or OWR_KEY */
 	return(rtv);
 }
 
-
+#ifndef SK_SLIM
 /*
  *	Read the contents of the VPD EEPROM and copy it to the
  *	VPD buffer if not already done.
@@ -763,7 +1003,7 @@ int		op)			/* operation to do: ADD_KEY or OWR_KEY */
  *		this fields.
  */
 SK_VPD_STATUS *VpdStat(
-SK_AC	*pAC,	/* Adapters context */
+SK_AC	*pAC,	/* Adapters Context */
 SK_IOC	IoC)	/* IO Context */
 {
 	if ((pAC->vpd.v.vpd_status & VPD_VALID) == 0) {
@@ -780,13 +1020,14 @@ SK_IOC	IoC)	/* IO Context */
  *	keyword list by copying the keywords to 'buf', all after
  *	each other and terminated with a '\0'.
  *
- * Exceptions:	o The Resource Type ID String (product name) is called "Name"
+ * Exceptions:
+ *		o The Resource Type ID String (product name) is called "Name"
  *		o The VPD end tags 'RV' and 'RW' are not listed
  *
  *	The number of copied keywords is counted in 'elements'.
  *
  * returns	0:	success
- *		2:	buffer overfull, one or more keywords are missing
+ *		2:	buffer overflow, one or more keywords are missing
  *		6:	fatal VPD error
  *
  *	example values after returning:
@@ -796,7 +1037,7 @@ SK_IOC	IoC)	/* IO Context */
  *		*elements =	 9
  */
 int VpdKeys(
-SK_AC	*pAC,		/* common data base */
+SK_AC	*pAC,		/* Adapters Context */
 SK_IOC	IoC,		/* IO Context */
 char	*buf,		/* buffer where to copy the keywords */
 int		*len,		/* buffer length */
@@ -806,6 +1047,7 @@ int		*elements)	/* number of keywords returned */
 	int n;
 
 	SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_RX, ("list VPD keys .. "));
+
 	*elements = 0;
 	if ((pAC->vpd.v.vpd_status & VPD_VALID) == 0) {
 		if (VpdInit(pAC, IoC) != 0) {
@@ -816,43 +1058,44 @@ int		*elements)	/* number of keywords returned */
 		}
 	}
 
-	if ((signed)strlen(VPD_NAME) + 1 <= *len) {
+	if ((signed)SK_STRLEN(VPD_NAME) + 1 <= *len) {
 		v = pAC->vpd.vpd_buf;
-		strcpy(buf,VPD_NAME);
-		n = strlen(VPD_NAME) + 1;
+		SK_STRCPY(buf, VPD_NAME);
+		n = SK_STRLEN(VPD_NAME) + 1;
 		buf += n;
 		*elements = 1;
 		SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_RX,
-			("'%c%c' ",v[0],v[1]));
+			("'%c%c' ", v[0], v[1]));
 	}
 	else {
 		*len = 0;
-		SK_DBG_MSG(pAC,SK_DBGMOD_VPD,SK_DBGCAT_ERR,
+		SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_ERR,
 			("buffer overflow\n"));
 		return(2);
 	}
 
 	v += 3 + VPD_GET_RES_LEN(v) + 3;
-	for (;; ) {
+
+	for ( ; ; ) {
 		/* exit when reaching the "RW" Tag */
-		if (SK_MEMCMP(VPD_RW,v,2) == 0) {
+		if (SK_MEMCMP(VPD_RW, v, 2) == 0) {
 			break;
 		}
 
-		if (SK_MEMCMP(VPD_RV,v,2) == 0) {
+		if (SK_MEMCMP(VPD_RV, v, 2) == 0) {
 			v += 3 + VPD_GET_VPD_LEN(v) + 3;	/* skip VPD-W */
 			continue;
 		}
 
-		if (n+3 <= *len) {
-			SK_MEMCPY(buf,v,2);
+		if (n + 3 <= *len) {
+			SK_MEMCPY(buf, v, 2);
 			buf += 2;
 			*buf++ = '\0';
 			n += 3;
 			v += 3 + VPD_GET_VPD_LEN(v);
 			*elements += 1;
 			SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_RX,
-				("'%c%c' ",v[0],v[1]));
+				("'%c%c' ", v[0], v[1]));
 		}
 		else {
 			*len = n;
@@ -867,6 +1110,7 @@ int		*elements)	/* number of keywords returned */
 	return(0);
 }
 
+#endif /* !SK_SLIM */
 
 /*
  *	Read the contents of the VPD EEPROM and copy it to the
@@ -882,7 +1126,7 @@ int		*elements)	/* number of keywords returned */
  *		6:	fatal VPD error
  */
 int VpdRead(
-SK_AC		*pAC,	/* common data base */
+SK_AC		*pAC,	/* Adapters Context */
 SK_IOC		IoC,	/* IO Context */
 const char	*key,	/* keyword to read (e.g. "MN") */
 char		*buf,	/* buffer where to copy the keyword value */
@@ -891,6 +1135,7 @@ int			*len)	/* buffer length */
 	SK_VPD_PARA *p, vp;
 
 	SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_RX, ("VPD read %s .. ", key));
+
 	if ((pAC->vpd.v.vpd_status & VPD_VALID) == 0) {
 		if (VpdInit(pAC, IoC) != 0) {
 			*len = 0;
@@ -901,7 +1146,7 @@ int			*len)	/* buffer length */
 	}
 
 	if ((p = vpd_find_para(pAC, key, &vp)) != NULL) {
-		if (p->p_len > (*(unsigned *)len)-1) {
+		if (p->p_len > (*(unsigned *)len) - 1) {
 			p->p_len = *len - 1;
 		}
 		SK_MEMCPY(buf, p->p_val, p->p_len);
@@ -909,7 +1154,7 @@ int			*len)	/* buffer length */
 		*len = p->p_len;
 		SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_RX,
 			("%c%c%c%c.., len = %d\n",
-			buf[0],buf[1],buf[2],buf[3],*len));
+			buf[0], buf[1], buf[2], buf[3], *len));
 	}
 	else {
 		*len = 0;
@@ -919,7 +1164,7 @@ int			*len)	/* buffer length */
 	return(0);
 }
 
-
+#ifndef SK_SLIM
 /*
  *	Check whether a given key may be written
  *
@@ -932,7 +1177,7 @@ char	*key)	/* keyword to write (allowed values "Yx", "Vx") */
 {
 	if ((*key != 'Y' && *key != 'V') ||
 		key[1] < '0' || key[1] > 'Z' ||
-		(key[1] > '9' && key[1] < 'A') || strlen(key) != 2) {
+		(key[1] > '9' && key[1] < 'A') || SK_STRLEN(key) != 2) {
 
 		return(SK_FALSE);
 	}
@@ -953,7 +1198,7 @@ char	*key)	/* keyword to write (allowed values "Yx", "Vx") */
  *		6:	fatal VPD error
  */
 int VpdWrite(
-SK_AC		*pAC,	/* common data base */
+SK_AC		*pAC,	/* Adapters Context */
 SK_IOC		IoC,	/* IO Context */
 const char	*key,	/* keyword to write (allowed values "Yx", "Vx") */
 const char	*buf)	/* buffer where the keyword value can be read from */
@@ -963,11 +1208,11 @@ const char	*buf)	/* buffer where the keyword value can be read from */
 	int rtv2;
 
 	SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_TX,
-		("VPD write %s = %s\n",key,buf));
+		("VPD write %s = %s\n", key, buf));
 
 	if ((*key != 'Y' && *key != 'V') ||
 		key[1] < '0' || key[1] > 'Z' ||
-		(key[1] > '9' && key[1] < 'A') || strlen(key) != 2) {
+		(key[1] > '9' && key[1] < 'A') || SK_STRLEN(key) != 2) {
 
 		SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_ERR,
 			("illegal key tag, keyword not written\n"));
@@ -983,13 +1228,13 @@ const char	*buf)	/* buffer where the keyword value can be read from */
 	}
 
 	rtv = 0;
-	len = strlen(buf);
+	len = SK_STRLEN(buf);
 	if (len > VPD_MAX_LEN) {
 		/* cut it */
 		len = VPD_MAX_LEN;
 		rtv = 2;
 		SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_ERR,
-			("keyword too long, cut after %d bytes\n",VPD_MAX_LEN));
+			("keyword too long, cut after %d bytes\n", VPD_MAX_LEN));
 	}
 	if ((rtv2 = VpdSetupPara(pAC, key, buf, len, VPD_RW_KEY, OWR_KEY)) != 0) {
 		SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_ERR,
@@ -1013,7 +1258,7 @@ const char	*buf)	/* buffer where the keyword value can be read from */
  *		6:	fatal VPD error
  */
 int VpdDelete(
-SK_AC	*pAC,	/* common data base */
+SK_AC	*pAC,	/* Adapters Context */
 SK_IOC	IoC,	/* IO Context */
 char	*key)	/* keyword to read (e.g. "MN") */
 {
@@ -1023,7 +1268,7 @@ char	*key)	/* keyword to read (e.g. "MN") */
 
 	vpd_size = pAC->vpd.vpd_size;
 
-	SK_DBG_MSG(pAC,SK_DBGMOD_VPD,SK_DBGCAT_TX,("VPD delete key %s\n",key));
+	SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_TX, ("VPD delete key %s\n", key));
 	if ((pAC->vpd.v.vpd_status & VPD_VALID) == 0) {
 		if (VpdInit(pAC, IoC) != 0) {
 			SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_ERR,
@@ -1042,7 +1287,7 @@ char	*key)	/* keyword to read (e.g. "MN") */
 
 		etp = pAC->vpd.vpd_buf + (vpd_size-pAC->vpd.v.vpd_free_rw-1-3);
 
-		vpd_move_para(vp.p_val+vp.p_len, etp+2,
+		vpd_move_para(vp.p_val + vp.p_len, etp + 2,
 			- ((int)(vp.p_len + 3)));
 		if (vpd_mod_endtag(pAC, etp - vp.p_len - 3)) {
 			pAC->vpd.v.vpd_status &= ~VPD_VALID;
@@ -1065,10 +1310,11 @@ char	*key)	/* keyword to read (e.g. "MN") */
  *	read/write area back to the VPD EEPROM.
  *
  * returns	0:	success
+ *		2:	not supported
  *		3:	VPD transfer timeout
  */
 int VpdUpdate(
-SK_AC	*pAC,	/* Adapters context */
+SK_AC	*pAC,	/* Adapters Context */
 SK_IOC	IoC)	/* IO Context */
 {
 	int vpd_size;
@@ -1076,6 +1322,11 @@ SK_IOC	IoC)	/* IO Context */
 	vpd_size = pAC->vpd.vpd_size;
 
 	SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_TX, ("VPD update .. "));
+	if (pAC->vpd.CfgInSpi) {
+		SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_TX, ("not supported"));
+		return(2);
+	}
+
 	if ((pAC->vpd.v.vpd_status & VPD_VALID) != 0) {
 		if (VpdTransferBlock(pAC, IoC, pAC->vpd.vpd_buf + vpd_size/2,
 			vpd_size/2, vpd_size/2, VPD_WRITE) != vpd_size/2) {
@@ -1085,7 +1336,55 @@ SK_IOC	IoC)	/* IO Context */
 			return(3);
 		}
 	}
+
 	SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_TX, ("done\n"));
 	return(0);
 }
+
+/*
+ *	Read the contents of the VPD EEPROM and copy it to the VPD buffer
+ *	if not already done. If the keyword "VF" is not present it will be
+ *	created and the error log message will be stored to this keyword.
+ *	If "VF" is not present the error log message will be stored to the
+ *	keyword "VL". "VL" will created or overwritten if "VF" is present.
+ *	The VPD read/write area is saved to the VPD EEPROM.
+ *
+ * returns nothing, errors will be ignored.
+ */
+void VpdErrLog(
+SK_AC	*pAC,	/* Adapters Context */
+SK_IOC	IoC,	/* IO Context */
+char	*msg)	/* error log message */
+{
+	SK_VPD_PARA *v, vf;	/* VF */
+	int len;
+
+	SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_TX,
+		("VPD error log msg %s\n", msg));
+
+	if ((pAC->vpd.v.vpd_status & VPD_VALID) == 0) {
+		if (VpdInit(pAC, IoC) != 0) {
+			SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_ERR,
+				("VPD init error\n"));
+			return;
+		}
+	}
+
+	len = SK_STRLEN(msg);
+	if (len > VPD_MAX_LEN) {
+		/* cut it */
+		len = VPD_MAX_LEN;
+	}
+	if ((v = vpd_find_para(pAC, VPD_VF, &vf)) != NULL) {
+		SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_TX, ("overwrite VL\n"));
+		(void)VpdSetupPara(pAC, VPD_VL, msg, len, VPD_RW_KEY, OWR_KEY);
+	}
+	else {
+		SK_DBG_MSG(pAC, SK_DBGMOD_VPD, SK_DBGCAT_TX, ("write VF\n"));
+		(void)VpdSetupPara(pAC, VPD_VF, msg, len, VPD_RW_KEY, ADD_KEY);
+	}
+
+	(void)VpdUpdate(pAC, IoC);
+}
+#endif /* !SK_SLIM */
 

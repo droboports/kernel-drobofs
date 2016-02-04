@@ -159,6 +159,28 @@ config ARCH_INTEGRATOR
 	help
 	  Support for ARM's Integrator platform.
 
+config ARCH_FEROCEON_ORION
+        bool "Feroceon-Orion based"
+	select ARCH_FEROCEON
+        select PCI
+	select GENERIC_TIME
+        select GENERIC_CLOCKEVENTS
+
+config ARCH_FEROCEON_KW
+        bool "Feroceon-KW based"
+	select ARCH_FEROCEON
+	select PCI
+	select GENERIC_TIME
+        select GENERIC_CLOCKEVENTS
+
+config ARCH_FEROCEON_MV78XX0
+        bool "Feroceon-MV78XX0 based"
+	select ARCH_FEROCEON
+	select PCI
+	select GENERIC_TIME
+        select GENERIC_CLOCKEVENTS
+
+	
 config ARCH_REALVIEW
 	bool "ARM Ltd. RealView family"
 	select ARM_AMBA
@@ -396,6 +418,11 @@ config ARCH_OMAP
 
 endchoice
 
+
+if ARCH_FEROCEON_ORION || ARCH_FEROCEON_KW || ARCH_FEROCEON_MV78XX0
+source "arch/arm/plat-feroceon/Kconfig"
+endif
+
 source "arch/arm/mach-clps711x/Kconfig"
 
 source "arch/arm/mach-ep93xx/Kconfig"
@@ -466,6 +493,9 @@ config ARCH_ACORN
 config PLAT_IOP
 	bool
 
+config ARCH_FEROCEON
+	bool
+
 source arch/arm/mm/Kconfig
 
 config IWMMXT
@@ -519,7 +549,7 @@ config ISA_DMA_API
 	bool
 
 config PCI
-	bool "PCI support" if ARCH_INTEGRATOR_AP || ARCH_VERSATILE_PB || ARCH_IXP4XX || ARCH_KS8695
+	bool "PCI support" if ARCH_INTEGRATOR_AP || ARCH_VERSATILE_PB || ARCH_IXP4XX || ARCH_KS8695 || ARCH_FEROCEON
 	help
 	  Find out whether you have a PCI motherboard. PCI is the name of a
 	  bus system, i.e. the way the CPU talks to the other stuff inside
@@ -664,6 +694,14 @@ config OABI_COMPAT
 	  UNPREDICTABLE (in fact it can be predicted that it won't work
 	  at all). If in doubt say Y.
 
+config REORDER
+        bool "Function reordering"
+        default n
+        help
+          This option enables the toolchain to reorder functions for a more
+          optimal TLB/Icache usage. If you have pretty much any version of binutils,
+          this can increase your kernel build time by roughly one minute.
+
 config ARCH_DISCONTIGMEM_ENABLE
 	bool
 	default (ARCH_LH7A40X && !LH7A40X_CONTIGMEM)
@@ -689,7 +727,7 @@ config LEDS
 		   ARCH_OMAP || ARCH_P720T || ARCH_PXA_IDP || \
 		   ARCH_SA1100 || ARCH_SHARK || ARCH_VERSATILE || \
 		   ARCH_AT91 || MACH_TRIZEPS4 || ARCH_DAVINCI || \
-		   ARCH_KS8695
+		   ARCH_KS8695 || ARCH_FEROCEON
 	help
 	  If you say Y here, the LEDs on your machine will be used
 	  to provide useful information about your current system status.
@@ -931,6 +969,18 @@ config VFP
 
 	  Say N if your target does not have VFP hardware.
 
+config VFP_FASTVFP
+        bool "FastVFP"
+	depends on VFP
+        help
+          Say Y here to include the FAST Vector Floating Point in the kernel.
+	  This means the VFP co-processor runs in a determinable time without 
+	  support code assistance, regardless of the characteristics of the input data. 
+	  In RunFast mode, no user exception traps are available.
+
+	  It should be sufficient for most programs. It may be not suitable
+	  for scientific calculations, but you have to check this for yourself.
+
 endmenu
 
 menu "Userspace binary formats"
@@ -997,6 +1047,8 @@ source "drivers/message/i2o/Kconfig"
 source "drivers/net/Kconfig"
 
 source "drivers/isdn/Kconfig"
+
+source "drivers/telephony/Kconfig"
 
 # input before char - char/joystick depends on it. As does USB.
 

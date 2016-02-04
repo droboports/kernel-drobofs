@@ -2,14 +2,15 @@
  *
  * Name:	skcsum.h
  * Project:	GEnesis - SysKonnect SK-NET Gigabit Ethernet (SK-98xx)
- * Version:	$Revision: 1.10 $
- * Date:	$Date: 2003/08/20 13:59:57 $
+ * Version:	$Revision: 2.5 $
+ * Date:	$Date: 2007/03/14 16:21:28 $
  * Purpose:	Store/verify Internet checksum in send/receive packets.
  *
  ******************************************************************************/
 
 /******************************************************************************
  *
+ *	LICENSE:
  *	(C)Copyright 1998-2001 SysKonnect GmbH.
  *
  *	This program is free software; you can redistribute it and/or modify
@@ -18,6 +19,7 @@
  *	(at your option) any later version.
  *
  *	The information in this file is provided "AS IS" without warranty.
+ *	/LICENSE
  *
  ******************************************************************************/
 
@@ -59,14 +61,25 @@
 
 /* defines ********************************************************************/
 
+/* The size of the IP header without any option fields. */
+#define SKCS_IP_HEADER_SIZE						20
+
+#ifdef SK_IPV6_SUPPORT
+/* The size of the IPv6 header */
+#define SKCS_IP6_HEADER_SIZE					40
+#endif	/* SK_IPV6_SUPPORT */
+
 /*
  * Define the default bit flags for 'SKCS_PACKET_INFO.ProtocolFlags'  if no user
  * overwrite.
  */
 #ifndef SKCS_OVERWRITE_PROTO	/* User overwrite? */
-#define SKCS_PROTO_IP	0x1	/* IP (Internet Protocol version 4) */
-#define SKCS_PROTO_TCP	0x2	/* TCP (Transmission Control Protocol) */
-#define SKCS_PROTO_UDP	0x4	/* UDP (User Datagram Protocol) */
+#define SKCS_PROTO_IP		0x1		/* IP (Internet Protocol version 4) */
+#define SKCS_PROTO_TCP		0x2		/* TCP (Transmission Control Protocol) */
+#define SKCS_PROTO_UDP		0x4		/* UDP (User Datagram Protocol) */
+
+#define SKCS_PROTO_TCPV6	0x20	/* TCP for IPv6 packets */
+#define SKCS_PROTO_UDPV6	0x40	/* UDP for IPv6 packets */
 
 /* Indices for protocol statistics. */
 #define SKCS_PROTO_STATS_IP	0
@@ -89,6 +102,7 @@
  *	SKCS_STATUS_TCP_CSUM_OK - IP and TCP checksum ok.
  *	SKCS_STATUS_UDP_CSUM_OK - IP and UDP checksum ok.
  *	SKCS_STATUS_IP_CSUM_OK_NO_UDP - IP checksum OK and no UDP checksum. 
+ *	SKCS_STATUS_NO_CSUM_POSSIBLE - Checksum could not be built (various reasons).
  */
 #ifndef SKCS_OVERWRITE_STATUS	/* User overwrite? */
 #define SKCS_STATUS	int	/* Define status type. */
@@ -106,6 +120,7 @@
 #define SKCS_STATUS_IP_CSUM_ERROR_TCP	10
 /* UDP checksum may be omitted */
 #define SKCS_STATUS_IP_CSUM_OK_NO_UDP	11
+#define SKCS_STATUS_NO_CSUM_POSSIBLE	12
 #endif	/* !SKCS_OVERWRITE_STATUS */
 
 /* Clear protocol statistics event. */
@@ -157,9 +172,7 @@ typedef struct s_CsProtocolStatistics {
 typedef struct s_Csum {
 	/* Enabled receive SK_PROTO_XXX bit flags. */
 	unsigned ReceiveFlags[SK_MAX_NETS];
-#ifdef TX_CSUM
 	unsigned TransmitFlags[SK_MAX_NETS];
-#endif /* TX_CSUM */
 
 	/* The protocol statistics structure; one per supported protocol. */
 	SKCS_PROTO_STATS ProtoStats[SK_MAX_NETS][SKCS_NUM_PROTOCOLS];
@@ -201,7 +214,14 @@ extern SKCS_STATUS SkCsGetReceiveInfo(
 	void		*pIpHeader,
 	unsigned	Checksum1,
 	unsigned	Checksum2,
-	int			NetNumber);
+	int			NetNumber,
+	unsigned	Len);
+
+extern void SkCsGetSendInfo(
+	SK_AC				*pAc,
+	void				*pIpHeader,
+	SKCS_PACKET_INFO	*pPacketInfo,
+	int					NetNumber);
 
 extern void SkCsSetReceiveFlags(
 	SK_AC		*pAc,

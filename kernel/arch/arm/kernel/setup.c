@@ -23,6 +23,7 @@
 #include <linux/cpu.h>
 #include <linux/interrupt.h>
 #include <linux/smp.h>
+#include <linux/fs.h>
 
 #include <asm/cpu.h>
 #include <asm/elf.h>
@@ -62,6 +63,8 @@ extern void _stext, _text, _etext, __data_start, _edata, _end;
 unsigned int processor_id;
 unsigned int __machine_arch_type;
 EXPORT_SYMBOL(__machine_arch_type);
+
+unsigned int __atags_pointer __initdata;
 
 unsigned int system_rev;
 EXPORT_SYMBOL(system_rev);
@@ -444,7 +447,9 @@ static void __init arm_add_memory(unsigned long start, unsigned long size)
 	 * Ensure that start/size are aligned to a page boundary.
 	 * Size is appropriately rounded down, start is rounded up.
 	 */
-	size -= start & ~PAGE_MASK;
+       if(size != 0) /* overcome bug in U-Boot */
+               size -= start & ~PAGE_MASK;
+
 
 	bank = &meminfo.bank[meminfo.nr_banks++];
 
@@ -780,7 +785,9 @@ void __init setup_arch(char **cmdline_p)
 	if (mdesc->soft_reboot)
 		reboot_setup("s");
 
-	if (mdesc->boot_params)
+	if (__atags_pointer)
+		tags = phys_to_virt(__atags_pointer);
+	else if (mdesc->boot_params)
 		tags = phys_to_virt(mdesc->boot_params);
 
 	/*

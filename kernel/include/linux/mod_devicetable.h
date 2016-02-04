@@ -147,6 +147,17 @@ struct ccw_device_id {
 #define CCW_DEVICE_ID_MATCH_CU_MODEL		0x02
 #define CCW_DEVICE_ID_MATCH_DEVICE_TYPE		0x04
 #define CCW_DEVICE_ID_MATCH_DEVICE_MODEL	0x08
+/* SDIO */
+
+#define SDIO_ANY_ID (~0)
+
+struct sdio_device_id {
+        __u8    class;                  /* Standard interface or SDIO_ANY_ID */
+        __u16   vendor;                 /* Vendor or SDIO_ANY_ID */
+        __u16   device;                 /* Device ID or SDIO_ANY_ID */
+        kernel_ulong_t driver_data;     /* Data private to the driver */
+};
+
 
 /* s390 AP bus devices */
 struct ap_device_id {

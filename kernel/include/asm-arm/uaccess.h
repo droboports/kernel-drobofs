@@ -383,8 +383,8 @@ do {									\
 
 
 #ifdef CONFIG_MMU
-extern unsigned long __must_check __copy_from_user(void *to, const void __user *from, unsigned long n);
-extern unsigned long __must_check __copy_to_user(void __user *to, const void *from, unsigned long n);
+extern unsigned long __must_check __arch_copy_from_user(void *to, const void __user *from, unsigned long n);
+extern unsigned long __must_check __arch_copy_to_user(void __user *to, const void *from, unsigned long n);
 extern unsigned long __must_check __clear_user(void __user *addr, unsigned long n);
 #else
 #define __copy_from_user(to,from,n)	(memcpy(to, (void __force *)from, n), 0)
@@ -394,21 +394,85 @@ extern unsigned long __must_check __clear_user(void __user *addr, unsigned long 
 
 extern unsigned long __must_check __strncpy_from_user(char *to, const char __user *from, unsigned long count);
 extern unsigned long __must_check __strnlen_user(const char __user *s, long n);
+#ifdef CONFIG_MV_IDMA_COPYUSER 
+#define COPYUSER_MIN_SIZE 	CONFIG_MV_IDMA_COPYUSER_THRESHOLD
+#endif
+
+#ifdef CONFIG_MV_USE_XOR_FOR_COPY_USER_BUFFERS
+#define COPYUSER_MIN_SIZE 	CONFIG_MV_XOR_COPYUSER_THRESHOLD
+#endif
+
+#ifdef COPYUSER_MIN_SIZE
+#if COPYUSER_MIN_SIZE < 64
+#error COPYUSER_MIN_SIZE must be greater than 64 bytes.
+#endif
+#endif
+
+#ifdef CONFIG_MV_USE_XOR_FOR_COPY_USER_BUFFERS
+extern unsigned long xor_copy_from_user(void *to, const void __user *from, unsigned long n);
+extern unsigned long xor_copy_to_user(void __user *to, const void *from, unsigned long n);
+#endif
+
+#ifdef CONFIG_MV_IDMA_COPYUSER
+extern unsigned long dma_copy_from_user(void *to, const void __user *from, unsigned long n);
+extern unsigned long dma_copy_to_user(void __user *to, const void *from, unsigned long n);
+#endif
+
 
 static inline unsigned long __must_check copy_from_user(void *to, const void __user *from, unsigned long n)
 {
-	if (access_ok(VERIFY_READ, from, n))
-		n = __copy_from_user(to, from, n);
+	if (access_ok(VERIFY_READ, from, n)) {
+#if defined(CONFIG_MV_IDMA_COPYUSER)
+		if(n > COPYUSER_MIN_SIZE)
+			return dma_copy_from_user(to,from,n);
+#elif defined(CONFIG_MV_USE_XOR_FOR_COPY_USER_BUFFERS)
+		if(n > COPYUSER_MIN_SIZE)
+			return xor_copy_from_user(to,from,n); 
+#endif
+		return __arch_copy_from_user(to, from, n);
+	}
 	else /* security hole - plug it */
 		memzero(to, n);
 	return n;
 }
 
+static inline unsigned long __copy_from_user(void *to, const void __user *from, unsigned long n)
+{
+#if defined(CONFIG_MV_IDMA_COPYUSER)
+        if(n > COPYUSER_MIN_SIZE)
+                return dma_copy_from_user(to,from,n);
+#elif defined(CONFIG_MV_USE_XOR_FOR_COPY_USER_BUFFERS)
+        if(n > COPYUSER_MIN_SIZE)
+                return xor_copy_from_user(to,from,n);
+#endif
+        return __arch_copy_from_user(to, from, n);
+}
+
 static inline unsigned long __must_check copy_to_user(void __user *to, const void *from, unsigned long n)
 {
-	if (access_ok(VERIFY_WRITE, to, n))
-		n = __copy_to_user(to, from, n);
+	if (access_ok(VERIFY_WRITE, to, n)) {
+#if defined(CONFIG_MV_IDMA_COPYUSER)
+		if(n > COPYUSER_MIN_SIZE)
+			return dma_copy_to_user(to,from,n);
+#elif defined(CONFIG_MV_USE_XOR_FOR_COPY_USER_BUFFERS)
+		if(n > COPYUSER_MIN_SIZE)
+			return xor_copy_to_user(to,from,n);
+#endif
+		return __arch_copy_to_user(to, from, n);
+	}
 	return n;
+}
+
+static inline unsigned long __copy_to_user(void __user *to, const void *from, unsigned long n)
+{
+#if defined(CONFIG_MV_IDMA_COPYUSER)    
+        if(n > COPYUSER_MIN_SIZE)
+                return dma_copy_to_user(to,from,n);
+#elif defined(CONFIG_MV_USE_XOR_FOR_COPY_USER_BUFFERS)
+        if(n > COPYUSER_MIN_SIZE)
+                return xor_copy_to_user(to,from,n);
+#endif
+        return __arch_copy_to_user(to, from, n);
 }
 
 #define __copy_to_user_inatomic __copy_to_user

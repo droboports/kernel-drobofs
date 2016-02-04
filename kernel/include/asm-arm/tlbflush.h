@@ -417,8 +417,19 @@ static inline void flush_pmd_entry(pmd_t *pmd)
 	if (tlb_flag(TLB_DCLEAN))
 		asm("mcr	p15, 0, %0, c7, c10, 1	@ flush_pmd"
 			: : "r" (pmd) : "cc");
+#ifdef CONFIG_L2_CACHE_ENABLE
+	if (tlb_flag(TLB_DCLEAN))
+		asm("mcr%?	p15, 1, %0, c15, c9, 1	@ L2 flush_pmd"
+			: : "r" (pmd));
+#endif
 	if (tlb_flag(TLB_WB))
 		dsb();
+#ifdef CONFIG_L2_CACHE_ENABLE
+	if (tlb_flag(TLB_WB))
+		asm("mcr%?	p15, 0, %0, c7, c10, 4	@ L2 flush WB"
+			: : "r" (pmd));
+#endif
+
 }
 
 static inline void clean_pmd_entry(pmd_t *pmd)
@@ -428,6 +439,10 @@ static inline void clean_pmd_entry(pmd_t *pmd)
 	if (tlb_flag(TLB_DCLEAN))
 		asm("mcr	p15, 0, %0, c7, c10, 1	@ flush_pmd"
 			: : "r" (pmd) : "cc");
+#ifdef CONFIG_L2_CACHE_ENABLE
+	asm("mcr%?	p15, 1, %0, c15, c9, 1	@ L2 flush_pmd"
+		: : "r" (pmd));
+#endif
 }
 
 #undef tlb_flag

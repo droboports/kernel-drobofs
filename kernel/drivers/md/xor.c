@@ -22,11 +22,34 @@
 #include <linux/raid/xor.h>
 #include <asm/xor.h>
 
+#ifdef CONFIG_MV_RAID5_XOR_OFFLOAD
+#include <asm/arch/xor.h>
+#endif
+
 /* The xor routines to use.  */
 static struct xor_block_template *active_template;
-
+#ifdef CONFIG_MV_RAID5_XOR_OFFLOAD
+static void
+cpu_xor_block(unsigned int count, unsigned int bytes, void **ptr);
+void 
+xor_block(unsigned int count, unsigned int bytes, void **ptr)
+{
+    static int no_xor_offload = 0;
+    if((count <= 8) /*&& (no_xor_offload < 10)*/)
+    {
+        if(xor_mv(count, bytes, ptr))
+            cpu_xor_block(count, bytes, ptr);
+        no_xor_offload++;
+    }
+    else
+        cpu_xor_block(count, bytes, ptr);
+}
+static void
+cpu_xor_block(unsigned int count, unsigned int bytes, void **ptr)
+#else
 void
 xor_block(unsigned int count, unsigned int bytes, void **ptr)
+#endif
 {
 	unsigned long *p0, *p1, *p2, *p3, *p4;
 

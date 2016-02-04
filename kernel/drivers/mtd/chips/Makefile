@@ -2,6 +2,7 @@
 # linux/drivers/chips/Makefile
 #
 
+obj-$(CONFIG_MV_FLASH_CTRL)	+= ../../../arch/arm/plat-feroceon/mv_drivers_lsp/mv_mtd/
 obj-$(CONFIG_MTD)		+= chipreg.o
 obj-$(CONFIG_MTD_CFI)		+= cfi_probe.o
 obj-$(CONFIG_MTD_CFI_UTIL)	+= cfi_util.o
@@ -13,3 +14,4 @@ obj-$(CONFIG_MTD_JEDECPROBE)	+= jedec_probe.o
 obj-$(CONFIG_MTD_RAM)		+= map_ram.o
 obj-$(CONFIG_MTD_ROM)		+= map_rom.o
 obj-$(CONFIG_MTD_ABSENT)	+= map_absent.o
+

@@ -29,7 +29,9 @@
  * The pointer is now aligned and the length is adjusted.  Try doing the
  * memzero again.
  */
-
+#if defined (CONFIG_MV_XORMEMZERO) || defined (CONFIG_MV_IDMA_MEMZERO)
+ENTRY(asm_memzero)
+#endif
 ENTRY(__memzero)
 	mov	r2, #0			@ 1
 	ands	r3, r0, #3		@ 1 unaligned?

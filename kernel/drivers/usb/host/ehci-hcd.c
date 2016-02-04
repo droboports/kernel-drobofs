@@ -33,8 +33,10 @@
 #include <linux/usb.h>
 #include <linux/moduleparam.h>
 #include <linux/dma-mapping.h>
+#include <linux/platform_device.h>
 
 #include "../core/hcd.h"
+#include "../core/usb.h"
 
 #include <asm/byteorder.h>
 #include <asm/io.h>
@@ -204,6 +206,18 @@ static void tdi_reset (struct ehci_hcd *ehci)
 	reg_ptr = (u32 __iomem *)(((u8 __iomem *)ehci->regs) + 0x68);
 	tmp = ehci_readl(ehci, reg_ptr);
 	tmp |= 0x3;
+        if(ehci_to_hcd(ehci)->self.controller->bus == &platform_bus_type)
+        {
+                struct platform_device  *pdev = to_platform_device(ehci_to_hcd(ehci)->self.controller); 
+#if defined(CONFIG_ARCH_FEROCEON) || defined(CONFIG_MARVELL)
+                if( ((pdev->id & 0x0000ffff) == PCI_VENDOR_ID_MARVELL) &&
+                        (((pdev->id & 0x00ff0000) >> 16) == 0) )
+                {
+                        /* Streaming disable for all USB rev0 */
+                        tmp |= (1 << 4);
+                }
+#endif /* CONFIG_ARCH_FEROCEON || CONFIG_MARVELL */
+        }
 	ehci_writel(ehci, tmp, reg_ptr);
 }
 
@@ -481,6 +495,13 @@ static int ehci_init(struct usb_hcd *hcd)
 	if (log2_irq_thresh < 0 || log2_irq_thresh > 6)
 		log2_irq_thresh = 0;
 	temp = 1 << (16 + log2_irq_thresh);
+
+#if defined(CONFIG_ARCH_FEROCEON) || defined(CONFIG_MARVELL)
+        /* For TDI controller set (ITC=0) - no delay */
+        if(ehci->is_tdi_rh_tt)
+                temp = 0;
+#endif /* CONFIG_ARCH_FEROCEON || CONFIG_MARVELL */
+
 	if (HCC_CANPARK(hcc_params)) {
 		/* HW default park == 3, on hardware that supports it (like
 		 * NVidia and ALI silicon), maximizes throughput on the async
@@ -566,21 +587,10 @@ static int ehci_run (struct usb_hcd *hcd)
 	 * are explicitly handed to companion controller(s), so no TT is
 	 * involved with the root hub.  (Except where one is integrated,
 	 * and there's no companion controller unless maybe for USB OTG.)
-	 *
-	 * Turning on the CF flag will transfer ownership of all ports
-	 * from the companions to the EHCI controller.  If any of the
-	 * companions are in the middle of a port reset at the time, it
-	 * could cause trouble.  Write-locking ehci_cf_port_reset_rwsem
-	 * guarantees that no resets are in progress.  After we set CF,
-	 * a short delay lets the hardware catch up; new resets shouldn't
-	 * be started before the port switching actions could complete.
 	 */
-	down_write(&ehci_cf_port_reset_rwsem);
 	hcd->state = HC_STATE_RUNNING;
 	ehci_writel(ehci, FLAG_CF, &ehci->regs->configured_flag);
 	ehci_readl(ehci, &ehci->regs->command);	/* unblock posted writes */
-	msleep(5);
-	up_write(&ehci_cf_port_reset_rwsem);
 
 	temp = HC_VERSION(ehci_readl(ehci, &ehci->caps->hc_capbase));
 	ehci_info (ehci,
@@ -643,7 +653,36 @@ static irqreturn_t ehci_irq (struct usb_hcd *hcd)
 		if (likely ((status & STS_ERR) == 0))
 			COUNT (ehci->stats.normal);
 		else
-			COUNT (ehci->stats.error);
+                {
+#if defined(CONFIG_ARCH_FEROCEON) || defined(CONFIG_MARVELL)
+                        if(hcd->self.controller->bus == &platform_bus_type)
+                        {
+                                struct platform_device  *pdev = to_platform_device(hcd->self.controller); 
+        
+                                /* For all MARVELL USB rev: 0 & 1 controllers */
+                                if( ((pdev->id & 0xffff) == PCI_VENDOR_ID_MARVELL) &&
+                                        (((pdev->id & 0x00ff0000) >> 16) <= 1) )
+                                {
+                                        u32                 portsc;
+                                        struct usb_hub* hub;
+        
+                                        portsc = readl (&ehci->regs->port_status[0]);
+                        
+                                        if( ((portsc & PORT_PE) == 0) &&
+                                                ((portsc & PORT_CONNECT) == 1) &&
+                                                (ehci_port_speed(ehci, portsc) == 0) )
+                                        {
+                                                ehci_dbg(ehci, "irq Error: portsc=0x%x, cause=0x%x\n", portsc, status);
+                                                hub = (struct usb_hub *)usb_get_intfdata (hcd->self.root_hub->actconfig->interface[0]);
+						set_bit(1, hub->change_bits);
+                                                usb_kick_khubd(hcd->self.root_hub);
+                                        }
+                                }
+                        }
+#endif /* CONFIG_ARCH_FEROCEON || CONFIG_MARVELL */
+                
+                        COUNT (ehci->stats.error);
+                }
 		bh = 1;
 	}
 
@@ -740,7 +779,11 @@ static int ehci_urb_enqueue (
 	// case PIPE_BULK:
 	default:
 		if (!qh_urb_transaction (ehci, urb, &qtd_list, mem_flags))
-			return -ENOMEM;
+                {
+                        printk("qh_urb_transaction FAILED: urb=%p, length=%d, interval=%d\n", 
+                                        urb, urb->transfer_buffer_length, urb->interval);               
+                        return -ENOMEM;
+                }
 		return submit_async (ehci, ep, urb, &qtd_list, mem_flags);
 
 	case PIPE_INTERRUPT:
@@ -949,6 +992,11 @@ MODULE_LICENSE ("GPL");
 #ifdef CONFIG_PPC_PS3
 #include "ehci-ps3.c"
 #define	PS3_SYSTEM_BUS_DRIVER	ps3_ehci_sb_driver
+#endif
+
+#if defined(CONFIG_ARCH_FEROCEON) || defined(CONFIG_MARVELL)
+#include "ehci_marvell.c"
+#define PLATFORM_DRIVER         ehci_marvell_driver
 #endif
 
 #if !defined(PCI_DRIVER) && !defined(PLATFORM_DRIVER) && \

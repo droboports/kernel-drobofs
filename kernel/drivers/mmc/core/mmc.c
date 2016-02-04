@@ -1,5 +1,5 @@
 /*
- *  linux/drivers/mmc/mmc.c
+ *  linux/drivers/mmc/core/mmc.c
  *
  *  Copyright (C) 2003-2004 Russell King, All Rights Reserved.
  *  Copyright (C) 2005-2007 Pierre Ossman, All Rights Reserved.
@@ -18,6 +18,7 @@
 
 #include "core.h"
 #include "sysfs.h"
+#include "bus.h"
 #include "mmc_ops.h"
 
 static const unsigned int tran_exp[] = {
@@ -99,7 +100,7 @@ static int mmc_decode_cid(struct mmc_card *card)
 		break;
 
 	default:
-		printk("%s: card has unknown MMCA version %d\n",
+		printk(KERN_ERR "%s: card has unknown MMCA version %d\n",
 			mmc_hostname(card->host), card->csd.mmca_vsn);
 		return -EINVAL;
 	}
@@ -122,7 +123,7 @@ static int mmc_decode_csd(struct mmc_card *card)
 	 */
 	csd_struct = UNSTUFF_BITS(resp, 126, 2);
 	if (csd_struct != 1 && csd_struct != 2) {
-		printk("%s: unrecognised CSD structure version %d\n",
+		printk(KERN_ERR "%s: unrecognised CSD structure version %d\n",
 			mmc_hostname(card->host), csd_struct);
 		return -EINVAL;
 	}
@@ -160,13 +161,12 @@ static int mmc_read_ext_csd(struct mmc_card *card)
 {
 	int err;
 	u8 *ext_csd;
+	unsigned int ext_csd_struct;
 
 	BUG_ON(!card);
 
-	err = MMC_ERR_FAILED;
-
 	if (card->csd.mmca_vsn < CSD_SPEC_VER_4)
-		return MMC_ERR_NONE;
+		return 0;
 
 	/*
 	 * As the ext_csd is so large and mostly unused, we don't store the
@@ -175,13 +175,19 @@ static int mmc_read_ext_csd(struct mmc_card *card)
 	ext_csd = kmalloc(512, GFP_KERNEL);
 	if (!ext_csd) {
 		printk(KERN_ERR "%s: could not allocate a buffer to "
-			"receive the ext_csd. mmc v4 cards will be "
-			"treated as v3.\n", mmc_hostname(card->host));
-		return MMC_ERR_FAILED;
+			"receive the ext_csd.\n", mmc_hostname(card->host));
+		return -ENOMEM;
 	}
 
 	err = mmc_send_ext_csd(card, ext_csd);
-	if (err != MMC_ERR_NONE) {
+	if (err) {
+		/*
+		 * We all hosts that cannot perform the command
+		 * to fail more gracefully
+		 */
+		if (err != -EINVAL)
+			goto out;
+
 		/*
 		 * High capacity cards should have this "magic" size
 		 * stored in their CSD.
@@ -196,18 +202,30 @@ static int mmc_read_ext_csd(struct mmc_card *card)
 				"EXT_CSD, performance might "
 				"suffer.\n",
 				mmc_hostname(card->host));
-			err = MMC_ERR_NONE;
+			err = 0;
 		}
+
 		goto out;
 	}
 
-	card->ext_csd.sectors =
-		ext_csd[EXT_CSD_SEC_CNT + 0] << 0 |
-		ext_csd[EXT_CSD_SEC_CNT + 1] << 8 |
-		ext_csd[EXT_CSD_SEC_CNT + 2] << 16 |
-		ext_csd[EXT_CSD_SEC_CNT + 3] << 24;
-	if (card->ext_csd.sectors)
-		mmc_card_set_blockaddr(card);
+	ext_csd_struct = ext_csd[EXT_CSD_REV];
+	if (ext_csd_struct > 2) {
+		printk(KERN_ERR "%s: unrecognised EXT_CSD structure "
+			"version %d\n", mmc_hostname(card->host),
+			ext_csd_struct);
+		err = -EINVAL;
+		goto out;
+	}
+
+	if (ext_csd_struct >= 2) {
+		card->ext_csd.sectors =
+			ext_csd[EXT_CSD_SEC_CNT + 0] << 0 |
+			ext_csd[EXT_CSD_SEC_CNT + 1] << 8 |
+			ext_csd[EXT_CSD_SEC_CNT + 2] << 16 |
+			ext_csd[EXT_CSD_SEC_CNT + 3] << 24;
+		if (card->ext_csd.sectors)
+			mmc_card_set_blockaddr(card);
+	}
 
 	switch (ext_csd[EXT_CSD_CARD_TYPE]) {
 	case EXT_CSD_CARD_TYPE_52 | EXT_CSD_CARD_TYPE_26:
@@ -236,7 +254,7 @@ out:
  * In the case of a resume, "curcard" will contain the card
  * we're trying to reinitialise.
  */
-static int mmc_sd_init_card(struct mmc_host *host, u32 ocr,
+static int mmc_init_card(struct mmc_host *host, u32 ocr,
 	struct mmc_card *oldcard)
 {
 	struct mmc_card *card;
@@ -245,7 +263,7 @@ static int mmc_sd_init_card(struct mmc_host *host, u32 ocr,
 	unsigned int max_dtr;
 
 	BUG_ON(!host);
-	BUG_ON(!host->claimed);
+	WARN_ON(!host->claimed);
 
 	/*
 	 * Since we're changing the OCR value, we seem to
@@ -257,19 +275,33 @@ static int mmc_sd_init_card(struct mmc_host *host, u32 ocr,
 
 	/* The extra bit indicates that we support high capacity */
 	err = mmc_send_op_cond(host, ocr | (1 << 30), NULL);
-	if (err != MMC_ERR_NONE)
+	if (err)
 		goto err;
+
+	/*
+	 * For SPI, enable CRC as appropriate.
+	 */
+	if (mmc_host_is_spi(host)) {
+		err = mmc_spi_set_crc(host, use_spi_crc);
+		if (err)
+			goto err;
+	}
 
 	/*
 	 * Fetch CID from card.
 	 */
-	err = mmc_all_send_cid(host, cid);
-	if (err != MMC_ERR_NONE)
+	if (mmc_host_is_spi(host))
+		err = mmc_send_cid(host, cid);
+	else
+		err = mmc_all_send_cid(host, cid);
+	if (err)
 		goto err;
 
 	if (oldcard) {
-		if (memcmp(cid, oldcard->raw_cid, sizeof(cid)) != 0)
+		if (memcmp(cid, oldcard->raw_cid, sizeof(cid)) != 0) {
+			err = -ENOENT;
 			goto err;
+		}
 
 		card = oldcard;
 	} else {
@@ -277,8 +309,10 @@ static int mmc_sd_init_card(struct mmc_host *host, u32 ocr,
 		 * Allocate card structure.
 		 */
 		card = mmc_alloc_card(host);
-		if (IS_ERR(card))
+		if (IS_ERR(card)) {
+			err = PTR_ERR(card);
 			goto err;
+		}
 
 		card->type = MMC_TYPE_MMC;
 		card->rca = 1;
@@ -286,43 +320,47 @@ static int mmc_sd_init_card(struct mmc_host *host, u32 ocr,
 	}
 
 	/*
-	 * Set card RCA.
+	 * For native busses:  set card RCA and quit open drain mode.
 	 */
-	err = mmc_set_relative_addr(card);
-	if (err != MMC_ERR_NONE)
-		goto free_card;
+	if (!mmc_host_is_spi(host)) {
+		err = mmc_set_relative_addr(card);
+		if (err)
+			goto free_card;
 
-	mmc_set_bus_mode(host, MMC_BUSMODE_PUSHPULL);
+		mmc_set_bus_mode(host, MMC_BUSMODE_PUSHPULL);
+	}
 
 	if (!oldcard) {
 		/*
 		 * Fetch CSD from card.
 		 */
 		err = mmc_send_csd(card, card->raw_csd);
-		if (err != MMC_ERR_NONE)
+		if (err)
 			goto free_card;
 
 		err = mmc_decode_csd(card);
-		if (err < 0)
+		if (err)
 			goto free_card;
 		err = mmc_decode_cid(card);
-		if (err < 0)
+		if (err)
 			goto free_card;
 	}
 
 	/*
 	 * Select card, as all following commands rely on that.
 	 */
-	err = mmc_select_card(card);
-	if (err != MMC_ERR_NONE)
-		goto free_card;
+	if (!mmc_host_is_spi(host)) {
+		err = mmc_select_card(card);
+		if (err)
+			goto free_card;
+	}
 
 	if (!oldcard) {
 		/*
-		 * Fetch and process extened CSD.
+		 * Fetch and process extended CSD.
 		 */
 		err = mmc_read_ext_csd(card);
-		if (err != MMC_ERR_NONE)
+		if (err)
 			goto free_card;
 	}
 
@@ -331,9 +369,9 @@ static int mmc_sd_init_card(struct mmc_host *host, u32 ocr,
 	 */
 	if ((card->ext_csd.hs_max_dtr != 0) &&
 		(host->caps & MMC_CAP_MMC_HIGHSPEED)) {
-		err = mmc_switch(card, EXT_CSD_CMD_SET_NORMAL,
+	        err = mmc_switch(card, EXT_CSD_CMD_SET_NORMAL,
 			EXT_CSD_HS_TIMING, 1);
-		if (err != MMC_ERR_NONE)
+		if (err)
 			goto free_card;
 
 		mmc_card_set_highspeed(card);
@@ -362,7 +400,7 @@ static int mmc_sd_init_card(struct mmc_host *host, u32 ocr,
 		(host->caps & MMC_CAP_4_BIT_DATA)) {
 		err = mmc_switch(card, EXT_CSD_CMD_SET_NORMAL,
 			EXT_CSD_BUS_WIDTH, EXT_CSD_BUS_WIDTH_4);
-		if (err != MMC_ERR_NONE)
+		if (err)
 			goto free_card;
 
 		mmc_set_bus_width(card->host, MMC_BUS_WIDTH_4);
@@ -371,14 +409,14 @@ static int mmc_sd_init_card(struct mmc_host *host, u32 ocr,
 	if (!oldcard)
 		host->card = card;
 
-	return MMC_ERR_NONE;
+	return 0;
 
 free_card:
 	if (!oldcard)
 		mmc_remove_card(card);
 err:
 
-	return MMC_ERR_FAILED;
+	return err;
 }
 
 /*
@@ -412,14 +450,60 @@ static void mmc_detect(struct mmc_host *host)
 
 	mmc_release_host(host);
 
-	if (err != MMC_ERR_NONE) {
-		mmc_remove_card(host->card);
-		host->card = NULL;
+	if (err) {
+		mmc_remove(host);
 
 		mmc_claim_host(host);
 		mmc_detach_bus(host);
 		mmc_release_host(host);
 	}
+}
+
+MMC_ATTR_FN(cid, "%08x%08x%08x%08x\n", card->raw_cid[0], card->raw_cid[1],
+	card->raw_cid[2], card->raw_cid[3]);
+MMC_ATTR_FN(csd, "%08x%08x%08x%08x\n", card->raw_csd[0], card->raw_csd[1],
+	card->raw_csd[2], card->raw_csd[3]);
+MMC_ATTR_FN(date, "%02d/%04d\n", card->cid.month, card->cid.year);
+MMC_ATTR_FN(fwrev, "0x%x\n", card->cid.fwrev);
+MMC_ATTR_FN(hwrev, "0x%x\n", card->cid.hwrev);
+MMC_ATTR_FN(manfid, "0x%06x\n", card->cid.manfid);
+MMC_ATTR_FN(name, "%s\n", card->cid.prod_name);
+MMC_ATTR_FN(oemid, "0x%04x\n", card->cid.oemid);
+MMC_ATTR_FN(serial, "0x%08x\n", card->cid.serial);
+
+static struct device_attribute mmc_dev_attrs[] = {
+	MMC_ATTR_RO(cid),
+	MMC_ATTR_RO(csd),
+	MMC_ATTR_RO(date),
+	MMC_ATTR_RO(fwrev),
+	MMC_ATTR_RO(hwrev),
+	MMC_ATTR_RO(manfid),
+	MMC_ATTR_RO(name),
+	MMC_ATTR_RO(oemid),
+	MMC_ATTR_RO(serial),
+	__ATTR_NULL,
+};
+
+/*
+ * Adds sysfs entries as relevant.
+ */
+static int mmc_sysfs_add(struct mmc_host *host, struct mmc_card *card)
+{
+	int ret;
+
+	ret = mmc_add_attrs(card, mmc_dev_attrs);
+	if (ret < 0)
+		return ret;
+
+	return 0;
+}
+
+/*
+ * Removes the sysfs entries added by mmc_sysfs_add().
+ */
+static void mmc_sysfs_remove(struct mmc_host *host, struct mmc_card *card)
+{
+	mmc_remove_attrs(card, mmc_dev_attrs);
 }
 
 #ifdef CONFIG_MMC_UNSAFE_RESUME
@@ -433,7 +517,8 @@ static void mmc_suspend(struct mmc_host *host)
 	BUG_ON(!host->card);
 
 	mmc_claim_host(host);
-	mmc_deselect_cards(host);
+	if (!mmc_host_is_spi(host))
+		mmc_deselect_cards(host);
 	host->card->state &= ~MMC_STATE_HIGHSPEED;
 	mmc_release_host(host);
 }
@@ -452,16 +537,17 @@ static void mmc_resume(struct mmc_host *host)
 	BUG_ON(!host->card);
 
 	mmc_claim_host(host);
+	err = mmc_init_card(host, host->ocr, host->card);
+	mmc_release_host(host);
 
-	err = mmc_sd_init_card(host, host->ocr, host->card);
-	if (err != MMC_ERR_NONE) {
-		mmc_remove_card(host->card);
-		host->card = NULL;
+	if (err) {
+		mmc_remove(host);
 
+		mmc_claim_host(host);
 		mmc_detach_bus(host);
+		mmc_release_host(host);
 	}
 
-	mmc_release_host(host);
 }
 
 #else
@@ -474,6 +560,8 @@ static void mmc_resume(struct mmc_host *host)
 static const struct mmc_bus_ops mmc_ops = {
 	.remove = mmc_remove,
 	.detect = mmc_detect,
+	.sysfs_add = mmc_sysfs_add,
+	.sysfs_remove = mmc_sysfs_remove,
 	.suspend = mmc_suspend,
 	.resume = mmc_resume,
 };
@@ -486,9 +574,18 @@ int mmc_attach_mmc(struct mmc_host *host, u32 ocr)
 	int err;
 
 	BUG_ON(!host);
-	BUG_ON(!host->claimed);
+	WARN_ON(!host->claimed);
 
 	mmc_attach_bus(host, &mmc_ops);
+
+	/*
+	 * We need to get OCR a different way for SPI.
+	 */
+	if (mmc_host_is_spi(host)) {
+		err = mmc_spi_read_ocr(host, 1, &ocr);
+		if (err)
+			goto err;
+	}
 
 	/*
 	 * Sanity check the voltages that the card claims to
@@ -506,32 +603,37 @@ int mmc_attach_mmc(struct mmc_host *host, u32 ocr)
 	/*
 	 * Can we support the voltage of the card?
 	 */
-	if (!host->ocr)
+	if (!host->ocr) {
+		err = -EINVAL;
 		goto err;
+	}
 
 	/*
 	 * Detect and init the card.
 	 */
-	err = mmc_sd_init_card(host, host->ocr, NULL);
-	if (err != MMC_ERR_NONE)
+	err = mmc_init_card(host, host->ocr, NULL);
+	if (err)
 		goto err;
 
 	mmc_release_host(host);
 
-	err = mmc_register_card(host->card);
+	err = mmc_add_card(host->card);
 	if (err)
-		goto reclaim_host;
+		goto remove_card;
 
 	return 0;
 
-reclaim_host:
-	mmc_claim_host(host);
+remove_card:
 	mmc_remove_card(host->card);
 	host->card = NULL;
+	mmc_claim_host(host);
 err:
 	mmc_detach_bus(host);
 	mmc_release_host(host);
 
-	return 0;
+	printk(KERN_ERR "%s: error %d whilst initialising MMC card\n",
+		mmc_hostname(host), err);
+
+	return err;
 }
 

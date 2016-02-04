@@ -159,6 +159,8 @@ static void qtd_copy_status (
 
 	/* serious "can't proceed" faults reported by the hardware */
 	if (token & QTD_STS_HALT) {
+		dbg ("qtd_copy_status HALT: token=0x%x, length=%d (%d), urb_length=%d\n", 
+					token, length, QTD_LENGTH (token), urb->actual_length);
 		if (token & QTD_STS_BABBLE) {
 			/* FIXME "must" disable babbling device's port too */
 			urb->status = -EOVERFLOW;
@@ -283,7 +285,7 @@ qh_completions (struct ehci_hcd *ehci, struct ehci_qh *qh)
 {
 	struct ehci_qtd		*last = NULL, *end = qh->dummy;
 	struct list_head	*entry, *tmp;
-	int			stopped;
+	int			stopped, pipe_type = 0;
 	unsigned		count = 0;
 	int			do_status = 0;
 	u8			state;
@@ -384,6 +386,7 @@ qh_completions (struct ehci_hcd *ehci, struct ehci_qh *qh)
 			 */
 			if ((HALT_BIT & qh->hw_token) == 0) {
 halt:
+                dbg("qh_completion HALT\n");
 				qh->hw_token |= HALT_BIT;
 				wmb ();
 			}
@@ -395,6 +398,8 @@ halt:
 		do_status = (urb->status == -EREMOTEIO)
 				&& usb_pipecontrol (urb->pipe);
 		spin_unlock (&urb->lock);
+
+        pipe_type = usb_pipetype (urb->pipe);
 
 		if (stopped && qtd->qtd_list.prev != &qh->qtd_list) {
 			last = list_entry (qtd->qtd_list.prev,
@@ -428,8 +433,9 @@ halt:
 			/* should be rare for periodic transfers,
 			 * except maybe high bandwidth ...
 			 */
-			if ((__constant_cpu_to_le32 (QH_SMASK)
-					& qh->hw_info2) != 0) {
+			/*if ((__constant_cpu_to_le32 (QH_SMASK)
+					& qh->hw_info2) != 0) {*/
+            if(pipe_type == PIPE_INTERRUPT) {
 				intr_deschedule (ehci, qh);
 				(void) qh_schedule (ehci, qh);
 			} else
@@ -667,6 +673,8 @@ qh_make (
 			qh->gap_uf = 0;
 
 			qh->period = urb->interval >> 3;
+			qh->u_period = urb->interval;
+#if 0
 			if (qh->period == 0 && urb->interval != 1) {
 				/* NOTE interval 2 or 4 uframes could work.
 				 * But interval 1 scheduling is simpler, and
@@ -676,6 +684,7 @@ qh_make (
 						urb->interval);
 				goto done;
 			}
+#endif
 		} else {
 			struct usb_tt	*tt = urb->dev->tt;
 			int		think_time;
@@ -698,6 +707,7 @@ qh_make (
 					usb_calc_bus_time (urb->dev->speed,
 					is_input, 0, max_packet (maxp)));
 			qh->period = urb->interval;
+			qh->u_period = (unsigned short)~0;
 		}
 	}
 
@@ -760,7 +770,7 @@ qh_make (
 		break;
 	default:
 		dbg ("bogus dev %p speed %d", urb->dev, urb->dev->speed);
-done:
+/*done:*/
 		qh_put (qh);
 		return NULL;
 	}

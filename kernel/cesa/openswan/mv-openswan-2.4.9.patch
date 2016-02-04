@@ -1,0 +1,466 @@
+diff -Nru openswan-2.4.9_a/linux/include/openswan/ipsec_rcv.h openswan-2.4.9_b/linux/include/openswan/ipsec_rcv.h
+--- openswan-2.4.9_a/linux/include/openswan/ipsec_rcv.h	2008-05-06 17:07:10.000000000 -0200
++++ openswan-2.4.9_b/linux/include/openswan/ipsec_rcv.h	2008-05-06 17:07:49.000000000 -0200
+@@ -148,6 +148,7 @@
+ 	int		next_state;
+ 
+ #ifdef CONFIG_KLIPS_OCF
++	struct tasklet_struct   tasklet;
+ 	struct work_struct	workq;
+ #endif
+ #ifndef NET_21
+diff -Nru openswan-2.4.9_a/linux/include/openswan/ipsec_tunnel.h openswan-2.4.9_b/linux/include/openswan/ipsec_tunnel.h
+--- openswan-2.4.9_a/linux/include/openswan/ipsec_tunnel.h	2005-06-04 14:06:05.000000000 -0200
++++ openswan-2.4.9_b/linux/include/openswan/ipsec_tunnel.h	2008-05-06 17:07:49.000000000 -0200
+@@ -117,7 +117,6 @@
+ #endif /* CONFIG_KLIPS_DEBUG */
+ #endif /* __KERNEL__ */
+ 
+-#ifdef CONFIG_KLIPS_DEBUG
+ #define DB_TN_INIT	0x0001
+ #define DB_TN_PROCFS	0x0002
+ #define DB_TN_XMIT	0x0010
+@@ -126,7 +125,6 @@
+ #define DB_TN_OXFS	0x0080
+ #define DB_TN_REVEC	0x0100
+ #define DB_TN_ENCAP     0x0200
+-#endif /* CONFIG_KLIPS_DEBUG */
+ 
+ /*
+  * $Log: ipsec_tunnel.h,v $
+diff -Nru openswan-2.4.9_a/linux/include/openswan/ipsec_xmit.h openswan-2.4.9_b/linux/include/openswan/ipsec_xmit.h
+--- openswan-2.4.9_a/linux/include/openswan/ipsec_xmit.h	2008-05-06 17:07:10.000000000 -0200
++++ openswan-2.4.9_b/linux/include/openswan/ipsec_xmit.h	2008-05-06 17:07:49.000000000 -0200
+@@ -140,6 +140,7 @@
+ 	int		next_state;
+ #ifdef CONFIG_KLIPS_OCF
+ 	struct work_struct	workq;
++	struct tasklet_struct tasklet;
+ #endif
+ #ifdef CONFIG_KLIPS_ALG
+ 	struct ipsec_alg_auth *ixt_a;
+diff -Nru openswan-2.4.9_a/linux/net/ipsec/ipsec_ocf.c openswan-2.4.9_b/linux/net/ipsec/ipsec_ocf.c
+--- openswan-2.4.9_a/linux/net/ipsec/ipsec_ocf.c	2008-05-06 17:07:10.000000000 -0200
++++ openswan-2.4.9_b/linux/net/ipsec/ipsec_ocf.c	2008-05-06 17:07:56.000000000 -0200
+@@ -53,10 +53,10 @@
+  * Tuning parameters,  the settings below appear best for
+  * the IXP
+  */
+-#define USE_BATCH 1	/* enable batch mode */
+-#define USE_CBIMM 1	/* enable immediate callbacks */
+-#define FORCE_QS  0	/* force use of queues for continuation of state machine */
+-
++#define USE_BATCH   0	/* disable batch mode */
++#define USE_CBIMM   1	/* enable immediate callbacks */
++#define FORCE_QS    0	/* force use of queues for continuation of state machine */
++#define USE_TASKLET 1  /* force use of tasklet for continuation of state machine */
+ /*
+  * Because some OCF operations are synchronous (ie., software encryption)
+  * we need to protect ourselves from distructive re-entry.  All we do
+@@ -83,7 +83,11 @@
+ 		(*sm)(arg); \
+ 	})
+ 
+-#if FORCE_QS == 0
++#if USE_TASKLET == 1
++	#define PROCESS_NEXT(tskl, sm, arg) \
++		tasklet_init(&tskl,(void (*)(unsigned long)) sm, (unsigned long)arg);\
++		tasklet_schedule(&tskl);
++#elif FORCE_QS == 0
+ 	#define PROCESS_NEXT(wq, wqsm, sm, arg) \
+ 		if (in_interrupt()) { \
+ 			PROCESS_LATER(wq, wqsm, arg); \
+@@ -218,6 +222,7 @@
+ 	return 1;
+ }
+ 
++#if USE_TASKLET == 0
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,20)
+ static void
+ ipsec_rsm_wq(struct work_struct *work)
+@@ -228,6 +233,7 @@
+ #else
+ #define	ipsec_rsm_wq	ipsec_rsm
+ #endif
++#endif /* USE_TASKLET */
+ 
+ static int
+ ipsec_ocf_rcv_cb(struct cryptop *crp)
+@@ -235,7 +241,6 @@
+ 	struct ipsec_rcv_state *irs = (struct ipsec_rcv_state *)crp->crp_opaque;
+ 
+ 	KLIPS_PRINT(debug_rcv, "klips_debug:ipsec_ocf_rcv_cb\n");
+-
+ 	if (irs == NULL) {
+ 		KLIPS_PRINT(debug_rcv, "klips_debug:ipsec_ocf_rcv_cb: "
+ 				"NULL irs in callback\n");
+@@ -273,7 +278,11 @@
+ 	crp = NULL;
+ 
+ 	/* setup the rest of the processing now */
++#if USE_TASKLET == 1
++	PROCESS_NEXT(irs->tasklet, ipsec_rsm, irs);
++#else
+ 	PROCESS_NEXT(irs->workq, ipsec_rsm_wq, ipsec_rsm, irs);
++#endif
+ 	return 0;
+ }
+ 
+@@ -319,6 +328,7 @@
+ 		if (!crda->crd_alg) {
+ 			KLIPS_PRINT(debug_rcv, "klips_debug:ipsec_ocf_rcv: "
+ 					"bad auth alg 0x%x\n", ipsp->ips_authalg);
++			crypto_freereq(crp);
+ 			return IPSEC_RCV_BADPROTO;
+ 		}
+ 
+@@ -365,6 +375,7 @@
+ 		if (!crde->crd_alg) {
+ 			KLIPS_PRINT(debug_rcv, "klips_debug:ipsec_ocf_rcv: "
+ 					"bad enc alg 0x%x\n", ipsp->ips_encalg);
++			crypto_freereq(crp);
+ 			return IPSEC_RCV_BADPROTO;
+ 		}
+ 
+@@ -391,11 +402,15 @@
+ 	crp->crp_callback = ipsec_ocf_rcv_cb;
+ 	crp->crp_sid = ipsp->ocf_cryptoid;
+ 	crp->crp_opaque = (caddr_t) irs;
+-	if (crypto_dispatch(crp))
++	if (crypto_dispatch(crp)) {
++		crypto_freereq(crp);
+ 		return IPSEC_RCV_REALLYBAD;
+-	return(IPSEC_RCV_PENDING);
++	}
++	else
++		return(IPSEC_RCV_PENDING);
+ }
+ 
++#if USE_TASKLET == 0
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,20)
+ static void
+ ipsec_xsm_wq(struct work_struct *work)
+@@ -406,6 +421,7 @@
+ #else
+ #define	ipsec_xsm_wq	ipsec_xsm
+ #endif
++#endif /* USE_TASKLET */
+ 
+ static int
+ ipsec_ocf_xmit_cb(struct cryptop *crp)
+@@ -445,7 +461,11 @@
+ 	crp = NULL;
+ 
+ 	/* setup the rest of the processing now */
++#if USE_TASKLET == 1
++	PROCESS_NEXT(ixs->tasklet, ipsec_xsm, ixs);
++#else
+ 	PROCESS_NEXT(ixs->workq, ipsec_xsm_wq, ipsec_xsm, ixs);
++#endif
+ 	return 0;
+ }
+ 
+@@ -493,6 +513,7 @@
+ 		if (!crda->crd_alg) {
+ 			KLIPS_PRINT(debug_tunnel&DB_TN_XMIT, "klips_debug:ipsec_ocf_xmit: "
+ 					"bad auth alg 0x%x\n", ipsp->ips_authalg);
++			crypto_freereq(crp);
+ 			return IPSEC_RCV_BADPROTO;
+ 		}
+ 		if (!crde) { /* assume AH processing */
+@@ -526,6 +547,7 @@
+ 		if (!crde->crd_alg) {
+ 			KLIPS_PRINT(debug_tunnel&DB_TN_XMIT, "klips_debug:ipsec_ocf_xmit: "
+ 					"bad enc alg 0x%x\n", ipsp->ips_encalg);
++			crypto_freereq(crp);
+ 			return IPSEC_RCV_BADPROTO;
+ 		}
+ 		crde->crd_flags  = CRD_F_ENCRYPT;
+@@ -550,9 +572,12 @@
+ 	crp->crp_callback = ipsec_ocf_xmit_cb;
+ 	crp->crp_sid = ipsp->ocf_cryptoid;
+ 	crp->crp_opaque = (caddr_t) ixs;
+-	if (crypto_dispatch(crp))
++	if (crypto_dispatch(crp)) {
++		crypto_freereq(crp);
+ 		return IPSEC_XMIT_ERRMEMALLOC;
+-	return(IPSEC_XMIT_PENDING);
++	}
++	else
++		return(IPSEC_XMIT_PENDING);
+ }
+ 
+ 
+diff -Nru openswan-2.4.9_a/linux/net/ipsec/ipsec_proc.c openswan-2.4.9_b/linux/net/ipsec/ipsec_proc.c
+--- openswan-2.4.9_a/linux/net/ipsec/ipsec_proc.c	2008-05-06 17:07:10.000000000 -0200
++++ openswan-2.4.9_b/linux/net/ipsec/ipsec_proc.c	2008-05-06 17:07:49.000000000 -0200
+@@ -959,8 +959,9 @@
+ 	proc_symlink("ipsec_spigrp", proc_net, "ipsec/spigrp/all");
+ 	proc_symlink("ipsec_tncfg",  proc_net, "ipsec/tncfg");
+ 	proc_symlink("ipsec_version",proc_net, "ipsec/version");
++#ifdef CONFIG_KLIPS_DEBUG
+ 	proc_symlink("ipsec_klipsdebug",proc_net,"ipsec/klipsdebug");
+-
++#endif
+ #endif /* !PROC_FS_2325 */
+ 
+ 	return error;
+diff -Nru openswan-2.4.9_a/linux/net/ipsec/ipsec_rcv.c openswan-2.4.9_b/linux/net/ipsec/ipsec_rcv.c
+--- openswan-2.4.9_a/linux/net/ipsec/ipsec_rcv.c	2008-05-06 17:07:11.000000000 -0200
++++ openswan-2.4.9_b/linux/net/ipsec/ipsec_rcv.c	2008-05-06 17:07:49.000000000 -0200
+@@ -92,9 +92,7 @@
+ #include "ipsec_ocf.h"
+ #endif
+ 
+-#ifdef CONFIG_KLIPS_DEBUG
+ int debug_rcv = 0;
+-#endif /* CONFIG_KLIPS_DEBUG */
+ 
+ int sysctl_ipsec_inbound_policy_check = 1;
+ 
+@@ -445,9 +443,7 @@
+ static enum ipsec_rcv_value
+ ipsec_rcv_init(struct ipsec_rcv_state *irs)
+ {
+-#ifdef CONFIG_KLIPS_DEBUG
+ 	struct net_device *dev;
+-#endif /* CONFIG_KLIPS_DEBUG */
+ 	unsigned char protoc;
+ 	struct iphdr *ipp;
+ 	struct net_device_stats *stats = NULL;		/* This device's statistics */
+@@ -555,6 +551,7 @@
+ 	}
+ #endif
+ 
++#ifdef CONFIG_KLIPS_DEBUG
+ 	if (debug_rcv)
+ 	{
+ 	  	struct in_addr ipsaddr;
+@@ -567,7 +564,7 @@
+ 		addrtoa(ipdaddr, 0, irs->ipdaddr_txt
+ 			, sizeof(irs->ipdaddr_txt));
+ 	}
+-
++#endif
+ 	irs->iphlen = ipp->ihl << 2;
+ 
+ 	KLIPS_PRINT(debug_rcv,
+@@ -730,13 +727,14 @@
+ 	irs->len = skb->len;
+ 	ipp = irs->ipp;
+ 	irs->proto = ipp->protocol;
++#ifdef CONFIG_KLIPS_DEBUG
+ 	if (debug_rcv) {
+ 	ipsaddr.s_addr = ipp->saddr;
+ 	addrtoa(ipsaddr, 0, irs->ipsaddr_txt, sizeof(irs->ipsaddr_txt));
+ 	ipdaddr.s_addr = ipp->daddr;
+ 	addrtoa(ipdaddr, 0, irs->ipdaddr_txt, sizeof(irs->ipdaddr_txt));
+ 	}
+-
++#endif
+ 	irs->iphlen = ipp->ihl << 2;
+ 	ipp->check = 0;			/* we know the sum is good */
+ 	
+@@ -771,12 +769,14 @@
+ 			irs->state, irs->next_state);
+ 
+ 	irs->said.proto = irs->proto;
++#ifdef CONFIG_KLIPS_DEBUG
+ 	if (debug_rcv) {
+ 	irs->sa_len = satot(&irs->said, 0, irs->sa, sizeof(irs->sa));
+ 	if(irs->sa_len == 0) {
+ 		strcpy(irs->sa, "(error)");
+ 	}
+ 	} else
++#endif
+ 		irs->sa_len = 0;
+ 
+ 	newipsp = ipsec_sa_getbyid(&irs->said);
+@@ -1238,14 +1238,14 @@
+ 	
+ 	/* zero any options that there might be */
+ 	memset(&(IPCB(skb)->opt), 0, sizeof(struct ip_options));
+-
++#ifdef CONFIG_KLIPS_DEBUG
+ 	if (debug_rcv) {
+ 	ipsaddr.s_addr = ipp->saddr;
+ 	addrtoa(ipsaddr, 0, irs->ipsaddr_txt, sizeof(irs->ipsaddr_txt));
+ 	ipdaddr.s_addr = ipp->daddr;
+ 	addrtoa(ipdaddr, 0, irs->ipdaddr_txt, sizeof(irs->ipdaddr_txt));
+ 	}
+-
++#endif
+ 	/*
+ 	 *	Discard the original ESP/AH header
+ 	 */
+diff -Nru openswan-2.4.9_a/linux/net/ipsec/ipsec_sa.c openswan-2.4.9_b/linux/net/ipsec/ipsec_sa.c
+--- openswan-2.4.9_a/linux/net/ipsec/ipsec_sa.c	2008-05-06 17:07:11.000000000 -0200
++++ openswan-2.4.9_b/linux/net/ipsec/ipsec_sa.c	2008-05-06 17:07:49.000000000 -0200
+@@ -76,9 +76,7 @@
+ #include "ipsec_ocf.h"
+ 
+ 
+-#ifdef CONFIG_KLIPS_DEBUG
+ int debug_xform = 0;
+-#endif /* CONFIG_KLIPS_DEBUG */
+ 
+ #define SENDERR(_x) do { error = -(_x); goto errlab; } while (0)
+ 
+diff -Nru openswan-2.4.9_a/linux/net/ipsec/ipsec_tunnel.c openswan-2.4.9_b/linux/net/ipsec/ipsec_tunnel.c
+--- openswan-2.4.9_a/linux/net/ipsec/ipsec_tunnel.c	2008-05-06 17:07:11.000000000 -0200
++++ openswan-2.4.9_b/linux/net/ipsec/ipsec_tunnel.c	2008-05-06 17:07:49.000000000 -0200
+@@ -95,9 +95,7 @@
+ 
+ static __u32 zeroes[64];
+ 
+-#ifdef CONFIG_KLIPS_DEBUG
+ int debug_tunnel = 0;
+-#endif /* CONFIG_KLIPS_DEBUG */
+ 
+ DEBUG_NO_STATIC int
+ ipsec_tunnel_open(struct net_device *dev)
+diff -Nru openswan-2.4.9_a/linux/net/ipsec/ipsec_xmit.c openswan-2.4.9_b/linux/net/ipsec/ipsec_xmit.c
+--- openswan-2.4.9_a/linux/net/ipsec/ipsec_xmit.c	2008-05-06 17:07:11.000000000 -0200
++++ openswan-2.4.9_b/linux/net/ipsec/ipsec_xmit.c	2008-05-06 17:07:49.000000000 -0200
+@@ -136,6 +136,8 @@
+ int sysctl_ipsec_icmp = 0;
+ int sysctl_ipsec_tos = 0;
+ 
++extern int debug_tunnel;
++
+ #ifdef CONFIG_KLIPS_DEBUG
+ #define dmp(_x,_y,_z) if(debug_tunnel) ipsec_dmp_block(_x,_y,_z)
+ #else /* CONFIG_KLIPS_DEBUG */
+@@ -2003,7 +2005,6 @@
+ ipsec_xsm(struct ipsec_xmit_state *ixs)
+ {
+ 	enum ipsec_xmit_value stat = IPSEC_XMIT_ENCAPFAIL;
+-
+ 	if (ixs == NULL) {
+ 		KLIPS_PRINT(debug_tunnel, "klips_debug:ipsec_xsm: ixs == NULL.\n");
+ 		return;
+diff -Nru openswan-2.4.9_a/linux/net/ipsec/pfkey_v2.c openswan-2.4.9_b/linux/net/ipsec/pfkey_v2.c
+--- openswan-2.4.9_a/linux/net/ipsec/pfkey_v2.c	2008-05-06 17:07:11.000000000 -0200
++++ openswan-2.4.9_b/linux/net/ipsec/pfkey_v2.c	2008-05-06 17:07:49.000000000 -0200
+@@ -75,10 +75,8 @@
+ #include "openswan/ipsec_proto.h"
+ #include "openswan/ipsec_kern24.h"
+ 
+-#ifdef CONFIG_KLIPS_DEBUG
+ int debug_pfkey = 0;
+ extern int sysctl_ipsec_debug_verbose;
+-#endif /* CONFIG_KLIPS_DEBUG */
+ 
+ #define SENDERR(_x) do { error = -(_x); goto errlab; } while (0)
+ 
+diff -Nru openswan-2.4.9_a/linux/net/ipsec/sysctl_net_ipsec.c openswan-2.4.9_b/linux/net/ipsec/sysctl_net_ipsec.c
+--- openswan-2.4.9_a/linux/net/ipsec/sysctl_net_ipsec.c	2008-05-06 17:07:11.000000000 -0200
++++ openswan-2.4.9_b/linux/net/ipsec/sysctl_net_ipsec.c	2008-05-06 17:07:49.000000000 -0200
+@@ -72,6 +72,54 @@
+ 	NET_IPSEC_REGRESS_PFKEY_LOSSAGE=16,
+ };
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,22)
++static ctl_table ipsec_table[] = {
++#ifdef CONFIG_KLIPS_DEBUG
++        { NET_IPSEC_DEBUG_AH, "debug_ah", &debug_ah,
++          sizeof(int), 0644, NULL, NULL, &proc_dointvec},
++        { NET_IPSEC_DEBUG_ESP, "debug_esp", &debug_esp,
++          sizeof(int), 0644, NULL, NULL, &proc_dointvec},
++        { NET_IPSEC_DEBUG_TUNNEL, "debug_tunnel", &debug_tunnel,
++          sizeof(int), 0644, NULL, NULL, &proc_dointvec},
++        { NET_IPSEC_DEBUG_EROUTE, "debug_eroute", &debug_eroute,
++          sizeof(int), 0644, NULL, NULL, &proc_dointvec},
++        { NET_IPSEC_DEBUG_SPI, "debug_spi", &debug_spi,
++          sizeof(int), 0644, NULL, NULL, &proc_dointvec},
++        { NET_IPSEC_DEBUG_RADIJ, "debug_radij", &debug_radij,
++          sizeof(int), 0644, NULL, NULL, &proc_dointvec},
++        { NET_IPSEC_DEBUG_NETLINK, "debug_netlink", &debug_netlink,
++          sizeof(int), 0644, NULL, NULL, &proc_dointvec},
++        { NET_IPSEC_DEBUG_XFORM, "debug_xform", &debug_xform,
++          sizeof(int), 0644, NULL, NULL, &proc_dointvec},
++        { NET_IPSEC_DEBUG_RCV, "debug_rcv", &debug_rcv,
++          sizeof(int), 0644, NULL, NULL, &proc_dointvec},
++        { NET_IPSEC_DEBUG_PFKEY, "debug_pfkey", &debug_pfkey,
++          sizeof(int), 0644, NULL, NULL, &proc_dointvec},
++        { NET_IPSEC_DEBUG_VERBOSE, "debug_verbose",&sysctl_ipsec_debug_verbose,
++          sizeof(int), 0644, NULL, NULL, &proc_dointvec},
++#ifdef CONFIG_KLIPS_IPCOMP
++        { NET_IPSEC_DEBUG_IPCOMP, "debug_ipcomp", &sysctl_ipsec_debug_ipcomp,
++          sizeof(int), 0644, NULL, NULL, &proc_dointvec},
++#endif /* CONFIG_KLIPS_IPCOMP */
++
++#ifdef CONFIG_KLIPS_REGRESS
++        { NET_IPSEC_REGRESS_PFKEY_LOSSAGE, "pfkey_lossage",
++          &sysctl_ipsec_regress_pfkey_lossage,
++          sizeof(int), 0644, NULL, NULL, &proc_dointvec},
++#endif /* CONFIG_KLIPS_REGRESS */
++
++#endif /* CONFIG_KLIPS_DEBUG */
++        { NET_IPSEC_ICMP, "icmp", &sysctl_ipsec_icmp,
++          sizeof(int), 0644, NULL, NULL, &proc_dointvec},
++        { NET_IPSEC_INBOUND_POLICY_CHECK, "inbound_policy_check", &sysctl_ipsec_inbound_policy_check,
++          sizeof(int), 0644, NULL, NULL, &proc_dointvec},
++        { NET_IPSEC_TOS, "tos", &sysctl_ipsec_tos,
++          sizeof(int), 0644, NULL, NULL, &proc_dointvec},
++        {0}
++};
++
++#else /* LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,22) */
++
+ static ctl_table ipsec_table[] = {
+ #ifdef CONFIG_KLIPS_DEBUG
+ 	{ NET_IPSEC_DEBUG_AH, "debug_ah", &debug_ah,
+@@ -116,6 +164,7 @@
+ 	  sizeof(int), 0644, NULL, &proc_dointvec},    
+ 	{0}
+ };
++#endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,22) */
+ 
+ static ctl_table ipsec_net_table[] = {
+         { NET_IPSEC, "ipsec", NULL, 0, 0555, ipsec_table },
+diff -Nru openswan-2.4.9_a/Makefile.inc openswan-2.4.9_b/Makefile.inc
+--- openswan-2.4.9_a/Makefile.inc	2008-05-06 17:07:10.000000000 -0200
++++ openswan-2.4.9_b/Makefile.inc	2008-05-06 17:07:49.000000000 -0200
+@@ -373,7 +373,7 @@
+ HAVE_THREADS?=false
+ 
+ # Do we have OCF available?
+-HAVE_OCF?=false
++HAVE_OCF?=true
+ 
+ # Do we have Openssl libraries available for BIGNUM support?
+ HAVE_OPENSSL?=false
+diff -Nru openswan-2.4.9_a/packaging/linus/config-all.h openswan-2.4.9_b/packaging/linus/config-all.h
+--- openswan-2.4.9_a/packaging/linus/config-all.h	2006-10-11 16:14:33.000000000 -0200
++++ openswan-2.4.9_b/packaging/linus/config-all.h	2008-05-06 17:07:49.000000000 -0200
+@@ -16,6 +16,8 @@
+  */
+ #define	_CONFIG_ALL_H_	/* seen it, no need to see it again */
+ 
++#define CONFIG_KLIPS_OCF 1
++
+ #define CONFIG_KLIPS 1
+ 
+ #ifndef CONFIG_KLIPS_AH
+@@ -23,7 +25,7 @@
+ #endif
+ 
+ #ifndef CONFIG_KLIPS_DEBUG 
+-#define CONFIG_KLIPS_DEBUG 1
++//#define CONFIG_KLIPS_DEBUG 1
+ #endif
+ 
+ #ifndef CONFIG_KLIPS_ESP
+diff -Nru openswan-2.4.9_a/packaging/makefiles/module.defs openswan-2.4.9_b/packaging/makefiles/module.defs
+--- openswan-2.4.9_a/packaging/makefiles/module.defs	2006-03-17 17:29:30.000000000 -0200
++++ openswan-2.4.9_b/packaging/makefiles/module.defs	2008-05-06 17:07:49.000000000 -0200
+@@ -1,6 +1,8 @@
+ # To config as static (preferred), 'y'.  To config as module, 'm'.
+ CONFIG_KLIPS=m
+ 
++CONFIG_KLIPS_OCF=y
++
+ # To enable authentication without encryption, say 'y'.
+ CONFIG_KLIPS_AH=y
+ 
