@@ -37,7 +37,6 @@
 #include <linux/device.h>
 #include <linux/net.h>
 #include <linux/mutex.h>
-#include <linux/kthread.h>
 
 #include <net/sock.h>
 #include <asm/uaccess.h>
@@ -68,6 +67,7 @@ static DEFINE_MUTEX(rfcomm_mutex);
 static unsigned long rfcomm_event;
 
 static LIST_HEAD(session_list);
+static atomic_t terminate, running;
 
 static int rfcomm_send_frame(struct rfcomm_session *s, u8 *data, int len);
 static int rfcomm_send_sabm(struct rfcomm_session *s, u8 dlci);
@@ -1849,6 +1849,26 @@ static inline void rfcomm_process_sessions(void)
 	rfcomm_unlock();
 }
 
+static void rfcomm_worker(void)
+{
+	BT_DBG("");
+
+	while (!atomic_read(&terminate)) {
+		set_current_state(TASK_INTERRUPTIBLE);
+		if (!test_bit(RFCOMM_SCHED_WAKEUP, &rfcomm_event)) {
+			/* No pending events. Let's sleep.
+			 * Incoming connections and data will wake us up. */
+			schedule();
+		}
+		set_current_state(TASK_RUNNING);
+
+		/* Process stuff */
+		clear_bit(RFCOMM_SCHED_WAKEUP, &rfcomm_event);
+		rfcomm_process_sessions();
+	}
+	return;
+}
+
 static int rfcomm_add_listener(bdaddr_t *ba)
 {
 	struct sockaddr_l2 addr;
@@ -1914,28 +1934,23 @@ static void rfcomm_kill_listener(void)
 
 static int rfcomm_run(void *unused)
 {
-	BT_DBG("");
+	rfcomm_thread = current;
 
+	atomic_inc(&running);
+
+	daemonize("krfcommd");
 	set_user_nice(current, -10);
+	current->flags |= PF_NOFREEZE;
+
+	BT_DBG("");
 
 	rfcomm_add_listener(BDADDR_ANY);
 
-	while (!kthread_should_stop()) {
-		set_current_state(TASK_INTERRUPTIBLE);
-		if (!test_bit(RFCOMM_SCHED_WAKEUP, &rfcomm_event)) {
-			/* No pending events. Let's sleep.
-			 * Incoming connections and data will wake us up. */
-			schedule();
-		}
-		set_current_state(TASK_RUNNING);
-
-		/* Process stuff */
-		clear_bit(RFCOMM_SCHED_WAKEUP, &rfcomm_event);
-		rfcomm_process_sessions();
-	}
+	rfcomm_worker();
 
 	rfcomm_kill_listener();
 
+	atomic_dec(&running);
 	return 0;
 }
 
@@ -2044,11 +2059,7 @@ static int __init rfcomm_init(void)
 
 	hci_register_cb(&rfcomm_cb);
 
-	rfcomm_thread = kthread_run(rfcomm_run, NULL, "krfcommd");
-	if (IS_ERR(rfcomm_thread)) {
-		hci_unregister_cb(&rfcomm_cb);
-		return PTR_ERR(rfcomm_thread);
-	}
+	kernel_thread(rfcomm_run, NULL, CLONE_KERNEL);
 
 	if (class_create_file(bt_class, &class_attr_rfcomm_dlc) < 0)
 		BT_ERR("Failed to create RFCOMM info file");
@@ -2070,7 +2081,14 @@ static void __exit rfcomm_exit(void)
 
 	hci_unregister_cb(&rfcomm_cb);
 
-	kthread_stop(rfcomm_thread);
+	/* Terminate working thread.
+	 * ie. Set terminate flag and wake it up */
+	atomic_inc(&terminate);
+	rfcomm_schedule(RFCOMM_SCHED_STATE);
+
+	/* Wait until thread is running */
+	while (atomic_read(&running))
+		schedule();
 
 #ifdef CONFIG_BT_RFCOMM_TTY
 	rfcomm_cleanup_ttys();

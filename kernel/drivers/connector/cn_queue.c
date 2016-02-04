@@ -99,8 +99,8 @@ int cn_queue_add_callback(struct cn_queue_dev *dev, char *name, struct cb_id *id
 	spin_unlock_bh(&dev->queue_lock);
 
 	if (found) {
-		cn_queue_free_callback(cbq);
 		atomic_dec(&dev->refcnt);
+		cn_queue_free_callback(cbq);
 		return -EINVAL;
 	}
 

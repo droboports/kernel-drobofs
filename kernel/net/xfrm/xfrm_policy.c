@@ -1479,9 +1479,8 @@ restart:
 
 	if (sk && sk->sk_policy[1]) {
 		policy = xfrm_sk_policy_lookup(sk, XFRM_POLICY_OUT, fl);
-		err = PTR_ERR(policy);
 		if (IS_ERR(policy))
-			goto dropdst;
+			return PTR_ERR(policy);
 	}
 
 	if (!policy) {
@@ -1492,9 +1491,8 @@ restart:
 
 		policy = flow_cache_lookup(fl, dst_orig->ops->family,
 					   dir, xfrm_policy_lookup);
-		err = PTR_ERR(policy);
 		if (IS_ERR(policy))
-			goto dropdst;
+			return PTR_ERR(policy);
 	}
 
 	if (!policy)
@@ -1663,9 +1661,8 @@ restart:
 	return 0;
 
 error:
-	xfrm_pols_put(pols, npols);
-dropdst:
 	dst_release(dst_orig);
+	xfrm_pols_put(pols, npols);
 	*dst_p = NULL;
 	return err;
 }
@@ -2144,7 +2141,7 @@ int xfrm_bundle_ok(struct xfrm_policy *pol, struct xfrm_dst *first,
 		if (last == first)
 			break;
 
-		last = (struct xfrm_dst *)last->u.dst.next;
+		last = last->u.next;
 		last->child_mtu_cached = mtu;
 	}
 

@@ -371,7 +371,7 @@ int __xfrm_state_delete(struct xfrm_state *x)
 		 * The xfrm_state_alloc call gives a reference, and that
 		 * is what we are dropping here.
 		 */
-		xfrm_state_put(x);
+		__xfrm_state_put(x);
 		err = 0;
 	}
 

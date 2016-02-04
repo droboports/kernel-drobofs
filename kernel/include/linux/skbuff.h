@@ -29,9 +29,6 @@
 #include <linux/dmaengine.h>
 #include <linux/hrtimer.h>
 
-#if defined(CONFIG_MV_SKB_HEADROOM)
-# define NET_SKB_PAD  CONFIG_MV_SKB_HEADROOM
-#endif
 #define HAVE_ALLOC_SKB		/* For the drivers to know */
 #define HAVE_ALIGNABLE_SKB	/* Ditto 8)		   */
 
@@ -1263,6 +1260,7 @@ static inline void __skb_queue_purge(struct sk_buff_head *list)
 	while ((skb = __skb_dequeue(list)) != NULL)
 		kfree_skb(skb);
 }
+
 /**
  *	__dev_alloc_skb - allocate an skbuff for receiving
  *	@length: length to allocate

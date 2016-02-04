@@ -1,5 +1,5 @@
 /*
- *  linux/drivers/mmc/host/mmci.c - ARM PrimeCell MMCI PL180/1 driver
+ *  linux/drivers/mmc/mmci.c - ARM PrimeCell MMCI PL180/1 driver
  *
  *  Copyright (C) 2003 Deep Blue Solutions, Ltd, All Rights Reserved.
  *
@@ -16,15 +16,14 @@
 #include <linux/delay.h>
 #include <linux/err.h>
 #include <linux/highmem.h>
-#include <linux/log2.h>
 #include <linux/mmc/host.h>
 #include <linux/amba/bus.h>
 #include <linux/clk.h>
-#include <linux/scatterlist.h>
 
 #include <asm/cacheflush.h>
 #include <asm/div64.h>
 #include <asm/io.h>
+#include <asm/scatterlist.h>
 #include <asm/sizes.h>
 #include <asm/mach/mmc.h>
 
@@ -155,11 +154,11 @@ mmci_data_irq(struct mmci_host *host, struct mmc_data *data,
 	}
 	if (status & (MCI_DATACRCFAIL|MCI_DATATIMEOUT|MCI_TXUNDERRUN|MCI_RXOVERRUN)) {
 		if (status & MCI_DATACRCFAIL)
-			data->error = -EILSEQ;
+			data->error = MMC_ERR_BADCRC;
 		else if (status & MCI_DATATIMEOUT)
-			data->error = -ETIMEDOUT;
+			data->error = MMC_ERR_TIMEOUT;
 		else if (status & (MCI_TXUNDERRUN|MCI_RXOVERRUN))
-			data->error = -EIO;
+			data->error = MMC_ERR_FIFO;
 		status |= MCI_DATAEND;
 
 		/*
@@ -167,7 +166,7 @@ mmci_data_irq(struct mmci_host *host, struct mmc_data *data,
 		 * partially written to a page is properly coherent.
 		 */
 		if (host->sg_len && data->flags & MMC_DATA_READ)
-			flush_dcache_page(sg_page(host->sg_ptr));
+			flush_dcache_page(host->sg_ptr->page);
 	}
 	if (status & MCI_DATAEND) {
 		mmci_stop_data(host);
@@ -194,12 +193,12 @@ mmci_cmd_irq(struct mmci_host *host, struct mmc_command *cmd,
 	cmd->resp[3] = readl(base + MMCIRESPONSE3);
 
 	if (status & MCI_CMDTIMEOUT) {
-		cmd->error = -ETIMEDOUT;
+		cmd->error = MMC_ERR_TIMEOUT;
 	} else if (status & MCI_CMDCRCFAIL && cmd->flags & MMC_RSP_CRC) {
-		cmd->error = -EILSEQ;
+		cmd->error = MMC_ERR_BADCRC;
 	}
 
-	if (!cmd->data || cmd->error) {
+	if (!cmd->data || cmd->error != MMC_ERR_NONE) {
 		if (host->data)
 			mmci_stop_data(host);
 		mmci_request_end(host, cmd->mrq);
@@ -319,7 +318,7 @@ static irqreturn_t mmci_pio_irq(int irq, void *dev_id)
 		 * page, ensure that the data cache is coherent.
 		 */
 		if (status & MCI_RXACTIVE)
-			flush_dcache_page(sg_page(host->sg_ptr));
+			flush_dcache_page(host->sg_ptr->page);
 
 		if (!mmci_next_sg(host))
 			break;
@@ -391,14 +390,6 @@ static void mmci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 	struct mmci_host *host = mmc_priv(mmc);
 
 	WARN_ON(host->mrq != NULL);
-
-	if (mrq->data && !is_power_of_2(mrq->data->blksz)) {
-		printk(KERN_ERR "%s: Unsupported block size (%d bytes)\n",
-			mmc_hostname(mmc), mrq->data->blksz);
-		mrq->cmd->error = -EINVAL;
-		mmc_request_done(mmc, mrq);
-		return;
-	}
 
 	spin_lock_irq(&host->lock);
 

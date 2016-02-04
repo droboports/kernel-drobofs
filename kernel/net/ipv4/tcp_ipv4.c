@@ -833,7 +833,8 @@ static struct tcp_md5sig_key *
 		return NULL;
 	for (i = 0; i < tp->md5sig_info->entries4; i++) {
 		if (tp->md5sig_info->keys4[i].addr == addr)
-			return &tp->md5sig_info->keys4[i].base;
+			return (struct tcp_md5sig_key *)
+						&tp->md5sig_info->keys4[i];
 	}
 	return NULL;
 }
@@ -864,9 +865,9 @@ int tcp_v4_md5_do_add(struct sock *sk, __be32 addr,
 	key = (struct tcp4_md5sig_key *)tcp_v4_md5_do_lookup(sk, addr);
 	if (key) {
 		/* Pre-existing entry - just update that one. */
-		kfree(key->base.key);
-		key->base.key = newkey;
-		key->base.keylen = newkeylen;
+		kfree(key->key);
+		key->key = newkey;
+		key->keylen = newkeylen;
 	} else {
 		struct tcp_md5sig_info *md5sig;
 
@@ -905,9 +906,9 @@ int tcp_v4_md5_do_add(struct sock *sk, __be32 addr,
 			md5sig->alloced4++;
 		}
 		md5sig->entries4++;
-		md5sig->keys4[md5sig->entries4 - 1].addr        = addr;
-		md5sig->keys4[md5sig->entries4 - 1].base.key    = newkey;
-		md5sig->keys4[md5sig->entries4 - 1].base.keylen = newkeylen;
+		md5sig->keys4[md5sig->entries4 - 1].addr   = addr;
+		md5sig->keys4[md5sig->entries4 - 1].key    = newkey;
+		md5sig->keys4[md5sig->entries4 - 1].keylen = newkeylen;
 	}
 	return 0;
 }
@@ -929,7 +930,7 @@ int tcp_v4_md5_do_del(struct sock *sk, __be32 addr)
 	for (i = 0; i < tp->md5sig_info->entries4; i++) {
 		if (tp->md5sig_info->keys4[i].addr == addr) {
 			/* Free the key */
-			kfree(tp->md5sig_info->keys4[i].base.key);
+			kfree(tp->md5sig_info->keys4[i].key);
 			tp->md5sig_info->entries4--;
 
 			if (tp->md5sig_info->entries4 == 0) {
@@ -963,7 +964,7 @@ static void tcp_v4_clear_md5_list(struct sock *sk)
 	if (tp->md5sig_info->entries4) {
 		int i;
 		for (i = 0; i < tp->md5sig_info->entries4; i++)
-			kfree(tp->md5sig_info->keys4[i].base.key);
+			kfree(tp->md5sig_info->keys4[i].key);
 		tp->md5sig_info->entries4 = 0;
 		tcp_free_md5sig_pool();
 	}
@@ -2433,6 +2434,7 @@ struct proto tcp_prot = {
 	.shutdown		= tcp_shutdown,
 	.setsockopt		= tcp_setsockopt,
 	.getsockopt		= tcp_getsockopt,
+	.sendmsg		= tcp_sendmsg,
 	.recvmsg		= tcp_recvmsg,
 	.backlog_rcv		= tcp_v4_do_rcv,
 	.hash			= tcp_v4_hash,

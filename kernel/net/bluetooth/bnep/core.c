@@ -2,7 +2,7 @@
    BNEP implementation for Linux Bluetooth stack (BlueZ).
    Copyright (C) 2001-2002 Inventel Systemes
    Written 2001-2002 by
-	ClÃ©ment Moreau <clement.moreau@inventel.fr>
+	Clément Moreau <clement.moreau@inventel.fr>
 	David Libault  <david.libault@inventel.fr>
 
    Copyright (C) 2002 Maxim Krasnyansky <maxk@qualcomm.com>
@@ -36,7 +36,6 @@
 #include <linux/signal.h>
 #include <linux/init.h>
 #include <linux/wait.h>
-#include <linux/freezer.h>
 #include <linux/errno.h>
 #include <linux/net.h>
 #include <net/sock.h>
@@ -475,6 +474,7 @@ static int bnep_session(void *arg)
 
 	daemonize("kbnepd %s", dev->name);
 	set_user_nice(current, -15);
+	current->flags |= PF_NOFREEZE;
 
 	init_waitqueue_entry(&wait, current);
 	add_wait_queue(sk->sk_sleep, &wait);

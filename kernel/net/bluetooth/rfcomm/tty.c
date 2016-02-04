@@ -95,10 +95,6 @@ static void rfcomm_dev_destruct(struct rfcomm_dev *dev)
 
 	BT_DBG("dev %p dlc %p", dev, dlc);
 
-	write_lock_bh(&rfcomm_dev_lock);
-	list_del_init(&dev->list);
-	write_unlock_bh(&rfcomm_dev_lock);
-
 	rfcomm_dlc_lock(dlc);
 	/* Detach DLC if it's owned by this dev */
 	if (dlc->owner == dev)
@@ -160,13 +156,8 @@ static inline struct rfcomm_dev *rfcomm_dev_get(int id)
 	read_lock(&rfcomm_dev_lock);
 
 	dev = __rfcomm_dev_get(id);
-
-	if (dev) {
-		if (test_bit(RFCOMM_TTY_RELEASED, &dev->flags))
-			dev = NULL;
-		else
-			rfcomm_dev_hold(dev);
-	}
+	if (dev)
+		rfcomm_dev_hold(dev);
 
 	read_unlock(&rfcomm_dev_lock);
 
@@ -188,23 +179,6 @@ static struct device *rfcomm_get_device(struct rfcomm_dev *dev)
 
 	return conn ? &conn->dev : NULL;
 }
-
-static ssize_t show_address(struct device *tty_dev, struct device_attribute *attr, char *buf)
-{
-	struct rfcomm_dev *dev = dev_get_drvdata(tty_dev);
-	bdaddr_t bdaddr;
-	baswap(&bdaddr, &dev->dst);
-	return sprintf(buf, "%s\n", batostr(&bdaddr));
-}
-
-static ssize_t show_channel(struct device *tty_dev, struct device_attribute *attr, char *buf)
-{
-	struct rfcomm_dev *dev = dev_get_drvdata(tty_dev);
-	return sprintf(buf, "%d\n", dev->channel);
-}
-
-static DEVICE_ATTR(address, S_IRUGO, show_address, NULL);
-static DEVICE_ATTR(channel, S_IRUGO, show_channel, NULL);
 
 static int rfcomm_dev_add(struct rfcomm_dev_req *req, struct rfcomm_dlc *dlc)
 {
@@ -284,27 +258,12 @@ static int rfcomm_dev_add(struct rfcomm_dev_req *req, struct rfcomm_dlc *dlc)
 out:
 	write_unlock_bh(&rfcomm_dev_lock);
 
-	if (err < 0) {
+	if (err) {
 		kfree(dev);
 		return err;
 	}
 
 	dev->tty_dev = tty_register_device(rfcomm_tty_driver, dev->id, NULL);
-
-	if (IS_ERR(dev->tty_dev)) {
-		err = PTR_ERR(dev->tty_dev);
-		list_del(&dev->list);
-		kfree(dev);
-		return err;
-	}
-
-	dev_set_drvdata(dev->tty_dev, dev);
-
-	if (device_create_file(dev->tty_dev, &dev_attr_address) < 0)
-		BT_ERR("Failed to create address attribute");
-
-	if (device_create_file(dev->tty_dev, &dev_attr_channel) < 0)
-		BT_ERR("Failed to create channel attribute");
 
 	return dev->id;
 }
@@ -313,7 +272,10 @@ static void rfcomm_dev_del(struct rfcomm_dev *dev)
 {
 	BT_DBG("dev %p", dev);
 
-	set_bit(RFCOMM_TTY_RELEASED, &dev->flags);
+	write_lock_bh(&rfcomm_dev_lock);
+	list_del_init(&dev->list);
+	write_unlock_bh(&rfcomm_dev_lock);
+
 	rfcomm_dev_put(dev);
 }
 
@@ -367,7 +329,7 @@ static int rfcomm_create_dev(struct sock *sk, void __user *arg)
 	if (copy_from_user(&req, arg, sizeof(req)))
 		return -EFAULT;
 
-	BT_DBG("sk %p dev_id %d flags 0x%x", sk, req.dev_id, req.flags);
+	BT_DBG("sk %p dev_id %id flags 0x%x", sk, req.dev_id, req.flags);
 
 	if (req.flags != NOCAP_FLAGS && !capable(CAP_NET_ADMIN))
 		return -EPERM;
@@ -408,7 +370,7 @@ static int rfcomm_release_dev(void __user *arg)
 	if (copy_from_user(&req, arg, sizeof(req)))
 		return -EFAULT;
 
-	BT_DBG("dev_id %d flags 0x%x", req.dev_id, req.flags);
+	BT_DBG("dev_id %id flags 0x%x", req.dev_id, req.flags);
 
 	if (!(dev = rfcomm_dev_get(req.dev_id)))
 		return -ENODEV;
@@ -420,10 +382,6 @@ static int rfcomm_release_dev(void __user *arg)
 
 	if (req.flags & (1 << RFCOMM_HANGUP_NOW))
 		rfcomm_dlc_close(dev->dlc, 0);
-
-	/* Shut down TTY synchronously before freeing rfcomm_dev */
-	if (dev->tty)
-		tty_vhangup(dev->tty);
 
 	rfcomm_dev_del(dev);
 	rfcomm_dev_put(dev);
@@ -457,8 +415,6 @@ static int rfcomm_get_dev_list(void __user *arg)
 
 	list_for_each(p, &rfcomm_dev_list) {
 		struct rfcomm_dev *dev = list_entry(p, struct rfcomm_dev, list);
-		if (test_bit(RFCOMM_TTY_RELEASED, &dev->flags))
-			continue;
 		(di + n)->id      = dev->id;
 		(di + n)->flags   = dev->flags;
 		(di + n)->state   = dev->dlc->state;

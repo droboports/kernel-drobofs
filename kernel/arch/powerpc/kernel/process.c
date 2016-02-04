@@ -83,7 +83,7 @@ void flush_fp_to_thread(struct task_struct *tsk)
 			 */
 			BUG_ON(tsk != current);
 #endif
-			giveup_fpu(tsk);
+			giveup_fpu(current);
 		}
 		preempt_enable();
 	}
@@ -143,7 +143,7 @@ void flush_altivec_to_thread(struct task_struct *tsk)
 #ifdef CONFIG_SMP
 			BUG_ON(tsk != current);
 #endif
-			giveup_altivec(tsk);
+			giveup_altivec(current);
 		}
 		preempt_enable();
 	}
@@ -182,7 +182,7 @@ void flush_spe_to_thread(struct task_struct *tsk)
 #ifdef CONFIG_SMP
 			BUG_ON(tsk != current);
 #endif
-			giveup_spe(tsk);
+			giveup_spe(current);
 		}
 		preempt_enable();
 	}

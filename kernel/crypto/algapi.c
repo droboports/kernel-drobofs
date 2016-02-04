@@ -98,9 +98,6 @@ static void crypto_remove_spawn(struct crypto_spawn *spawn,
 		return;
 
 	inst->alg.cra_flags |= CRYPTO_ALG_DEAD;
-	if (hlist_unhashed(&inst->list))
-		return;
-
 	if (!tmpl || !crypto_tmpl_get(tmpl))
 		return;
 
@@ -335,6 +332,9 @@ int crypto_register_instance(struct crypto_template *tmpl,
 {
 	LIST_HEAD(list);
 	int err = -EINVAL;
+
+	if (inst->alg.cra_destroy)
+		goto err;
 
 	err = crypto_check_alg(&inst->alg);
 	if (err)

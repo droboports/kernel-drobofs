@@ -136,7 +136,7 @@ struct ppp_mppe_state {
  * Key Derivation, from RFC 3078, RFC 3079.
  * Equivalent to Get_Key() for MS-CHAP as described in RFC 3079.
  */
-static void get_new_key_from_sha(struct ppp_mppe_state * state)
+static void get_new_key_from_sha(struct ppp_mppe_state * state, unsigned char *InterimKey)
 {
 	struct hash_desc desc;
 	struct scatterlist sg[4];
@@ -153,6 +153,8 @@ static void get_new_key_from_sha(struct ppp_mppe_state * state)
 	desc.flags = 0;
 
 	crypto_hash_digest(&desc, sg, nbytes, state->sha1_digest);
+
+	memcpy(InterimKey, state->sha1_digest, state->keylen);
 }
 
 /*
@@ -161,21 +163,21 @@ static void get_new_key_from_sha(struct ppp_mppe_state * state)
  */
 static void mppe_rekey(struct ppp_mppe_state * state, int initial_key)
 {
+	unsigned char InterimKey[MPPE_MAX_KEY_LEN];
 	struct scatterlist sg_in[1], sg_out[1];
 	struct blkcipher_desc desc = { .tfm = state->arc4 };
 
-	get_new_key_from_sha(state);
+	get_new_key_from_sha(state, InterimKey);
 	if (!initial_key) {
-		crypto_blkcipher_setkey(state->arc4, state->sha1_digest,
-					state->keylen);
-		setup_sg(sg_in, state->sha1_digest, state->keylen);
+		crypto_blkcipher_setkey(state->arc4, InterimKey, state->keylen);
+		setup_sg(sg_in, InterimKey, state->keylen);
 		setup_sg(sg_out, state->session_key, state->keylen);
 		if (crypto_blkcipher_encrypt(&desc, sg_out, sg_in,
 					     state->keylen) != 0) {
     		    printk(KERN_WARNING "mppe_rekey: cipher_encrypt failed\n");
 		}
 	} else {
-		memcpy(state->session_key, state->sha1_digest, state->keylen);
+		memcpy(state->session_key, InterimKey, state->keylen);
 	}
 	if (state->keylen == 8) {
 		/* See RFC 3078 */

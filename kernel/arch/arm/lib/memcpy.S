@@ -52,9 +52,7 @@
 	.text
 
 /* Prototype: void *memcpy(void *dest, const void *src, size_t n); */
-#if defined (CONFIG_MV_XORMEMCOPY) || defined (CONFIG_MV_IDMA_MEMCOPY)
-ENTRY(asm_memcpy)
-#endif
+
 ENTRY(memcpy)
 
 #include "copy_template.S"

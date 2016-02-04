@@ -55,7 +55,7 @@ static void rfkill_task_handler(struct work_struct *work)
 
 static void rfkill_schedule_toggle(struct rfkill_task *task)
 {
-	unsigned long flags;
+	unsigned int flags;
 
 	spin_lock_irqsave(&task->lock, flags);
 

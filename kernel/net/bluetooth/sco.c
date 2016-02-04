@@ -189,7 +189,7 @@ static int sco_connect(struct sock *sk)
 	struct sco_conn *conn;
 	struct hci_conn *hcon;
 	struct hci_dev  *hdev;
-	int err, type;
+	int err = 0;
 
 	BT_DBG("%s -> %s", batostr(src), batostr(dst));
 
@@ -200,9 +200,7 @@ static int sco_connect(struct sock *sk)
 
 	err = -ENOMEM;
 
-	type = lmp_esco_capable(hdev) ? ESCO_LINK : SCO_LINK;
-
-	hcon = hci_connect(hdev, type, dst);
+	hcon = hci_connect(hdev, SCO_LINK, dst);
 	if (!hcon)
 		goto done;
 
@@ -226,7 +224,6 @@ static int sco_connect(struct sock *sk)
 		sk->sk_state = BT_CONNECT;
 		sco_sock_set_timer(sk, sk->sk_sndtimeo);
 	}
-
 done:
 	hci_dev_unlock_bh(hdev);
 	hci_dev_put(hdev);
@@ -849,7 +846,7 @@ static int sco_connect_cfm(struct hci_conn *hcon, __u8 status)
 {
 	BT_DBG("hcon %p bdaddr %s status %d", hcon, batostr(&hcon->dst), status);
 
-	if (hcon->type != SCO_LINK && hcon->type != ESCO_LINK)
+	if (hcon->type != SCO_LINK)
 		return 0;
 
 	if (!status) {
@@ -868,11 +865,10 @@ static int sco_disconn_ind(struct hci_conn *hcon, __u8 reason)
 {
 	BT_DBG("hcon %p reason %d", hcon, reason);
 
-	if (hcon->type != SCO_LINK && hcon->type != ESCO_LINK)
+	if (hcon->type != SCO_LINK)
 		return 0;
 
 	sco_conn_del(hcon, bt_err(reason));
-
 	return 0;
 }
 

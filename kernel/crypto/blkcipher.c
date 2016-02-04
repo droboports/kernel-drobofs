@@ -59,13 +59,11 @@ static inline void blkcipher_unmap_dst(struct blkcipher_walk *walk)
 	scatterwalk_unmap(walk->dst.virt.addr, 1);
 }
 
-/* Get a spot of the specified length that does not straddle a page.
- * The caller needs to ensure that there is enough space for this operation.
- */
 static inline u8 *blkcipher_get_spot(u8 *start, unsigned int len)
 {
-	u8 *end_page = (u8 *)(((unsigned long)(start + len - 1)) & PAGE_MASK);
-	return start > end_page ? start : end_page;
+	if (offset_in_page(start + len) < len)
+		return (u8 *)((unsigned long)(start + len) & PAGE_MASK);
+	return start;
 }
 
 static inline unsigned int blkcipher_done_slow(struct crypto_blkcipher *tfm,
@@ -157,8 +155,7 @@ static inline int blkcipher_next_slow(struct blkcipher_desc *desc,
 	if (walk->buffer)
 		goto ok;
 
-	n = bsize * 3 - (alignmask + 1) +
-	    (alignmask & ~(crypto_tfm_ctx_alignment() - 1));
+	n = bsize * 2 + (alignmask & ~(crypto_tfm_ctx_alignment() - 1));
 	walk->buffer = kmalloc(n, GFP_ATOMIC);
 	if (!walk->buffer)
 		return blkcipher_walk_done(desc, walk, -ENOMEM);

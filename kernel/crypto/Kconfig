@@ -462,8 +462,6 @@ config CRYPTO_TEST
 
 source "drivers/crypto/Kconfig"
 
-source "crypto/ocf/Kconfig"
-
 endif	# if CRYPTO
 
 endmenu

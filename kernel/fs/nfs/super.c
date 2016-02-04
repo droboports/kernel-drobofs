@@ -181,8 +181,8 @@ void __exit unregister_nfs_fs(void)
 		remove_shrinker(acl_shrinker);
 #ifdef CONFIG_NFS_V4
 	unregister_filesystem(&nfs4_fs_type);
-#endif
 	nfs_unregister_sysctl();
+#endif
 	unregister_filesystem(&nfs_fs_type);
 }
 

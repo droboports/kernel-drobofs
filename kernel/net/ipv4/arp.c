@@ -72,8 +72,6 @@
  *					bonding can change the skb before
  *					sending (e.g. insert 8021q tag).
  *		Harald Welte	:	convert to make use of jenkins hash
- *		Julian Anastasov:	"hidden" flag: hide the
- *					interface and don't reply for it
  */
 
 #include <linux/module.h>
@@ -112,8 +110,12 @@
 #include <net/tcp.h>
 #include <net/sock.h>
 #include <net/arp.h>
+#if defined(CONFIG_AX25) || defined(CONFIG_AX25_MODULE)
 #include <net/ax25.h>
+#if defined(CONFIG_NETROM) || defined(CONFIG_NETROM_MODULE)
 #include <net/netrom.h>
+#endif
+#endif
 #if defined(CONFIG_ATM_CLIP) || defined(CONFIG_ATM_CLIP_MODULE)
 #include <net/atmclip.h>
 struct neigh_table *clip_tbl_hook;
@@ -333,34 +335,21 @@ static void arp_solicit(struct neighbour *neigh, struct sk_buff *skb)
 	__be32 target = *(__be32*)neigh->primary_key;
 	int probes = atomic_read(&neigh->probes);
 	struct in_device *in_dev = in_dev_get(dev);
-	struct in_device *in_dev2 = NULL;
-	struct net_device *dev2 = NULL;
-	int mode;
 
 	if (!in_dev)
 		return;
 
-	mode = IN_DEV_ARP_ANNOUNCE(in_dev);
-	if (mode != 2 && skb && (dev2 = ip_dev_find(ip_hdr(skb)->saddr)) != NULL &&
-	    (saddr = ip_hdr(skb)->saddr, in_dev2 = in_dev_get(dev2)) != NULL &&
-	    IN_DEV_HIDDEN(in_dev2)) {
-		saddr = 0;
-		goto get;
-	}
-
-	switch (mode) {
+	switch (IN_DEV_ARP_ANNOUNCE(in_dev)) {
 	default:
 	case 0:		/* By default announce any local IP */
-		if (saddr)
-			break;
 		if (skb && inet_addr_type(ip_hdr(skb)->saddr) == RTN_LOCAL)
 			saddr = ip_hdr(skb)->saddr;
 		break;
 	case 1:		/* Restrict announcements of saddr in same subnet */
 		if (!skb)
 			break;
-		if (saddr || (saddr = ip_hdr(skb)->saddr,
-			      inet_addr_type(saddr) == RTN_LOCAL)) {
+		saddr = ip_hdr(skb)->saddr;
+		if (inet_addr_type(saddr) == RTN_LOCAL) {
 			/* saddr should be known to target */
 			if (inet_addr_onlink(in_dev, target, saddr))
 				break;
@@ -371,12 +360,6 @@ static void arp_solicit(struct neighbour *neigh, struct sk_buff *skb)
 		break;
 	}
 
-get:
-	if (dev2) {
-		if (in_dev2)
-			in_dev_put(in_dev2);
-		dev_put(dev2);
-	}
 	if (in_dev)
 		in_dev_put(in_dev);
 	if (!saddr)
@@ -452,26 +435,6 @@ static int arp_filter(__be32 sip, __be32 tip, struct net_device *dev)
 	}
 	ip_rt_put(rt);
 	return flag;
-}
-
-static int arp_hidden(u32 tip, struct net_device *dev)
-{
-	struct net_device *dev2 = NULL;
-	struct in_device *in_dev2 = NULL;
-	int ret = 0;
-
-	if (!IPV4_DEVCONF_ALL(HIDDEN))
-		return 0;
-
-	if ((dev2 = ip_dev_find(tip)) && dev2 != dev &&
-	    (in_dev2 = in_dev_get(dev2)) && IN_DEV_HIDDEN(in_dev2))
-		ret = 1;
-	if (dev2) {
-		if (in_dev2)
-			in_dev_put(in_dev2);
-		dev_put(dev2);
-	}
-	return ret;
 }
 
 /* OBSOLETE FUNCTIONS */
@@ -766,10 +729,20 @@ static int arp_process(struct sk_buff *skb)
 		    htons(dev_type) != arp->ar_hrd)
 			goto out;
 		break;
+#ifdef CONFIG_NET_ETHERNET
 	case ARPHRD_ETHER:
+#endif
+#ifdef CONFIG_TR
 	case ARPHRD_IEEE802_TR:
+#endif
+#ifdef CONFIG_FDDI
 	case ARPHRD_FDDI:
+#endif
+#ifdef CONFIG_NET_FC
 	case ARPHRD_IEEE802:
+#endif
+#if defined(CONFIG_NET_ETHERNET) || defined(CONFIG_TR) || \
+    defined(CONFIG_FDDI)	 || defined(CONFIG_NET_FC)
 		/*
 		 * ETHERNET, Token Ring and Fibre Channel (which are IEEE 802
 		 * devices, according to RFC 2625) devices will accept ARP
@@ -784,16 +757,21 @@ static int arp_process(struct sk_buff *skb)
 		    arp->ar_pro != htons(ETH_P_IP))
 			goto out;
 		break;
+#endif
+#if defined(CONFIG_AX25) || defined(CONFIG_AX25_MODULE)
 	case ARPHRD_AX25:
 		if (arp->ar_pro != htons(AX25_P_IP) ||
 		    arp->ar_hrd != htons(ARPHRD_AX25))
 			goto out;
 		break;
+#if defined(CONFIG_NETROM) || defined(CONFIG_NETROM_MODULE)
 	case ARPHRD_NETROM:
 		if (arp->ar_pro != htons(AX25_P_IP) ||
 		    arp->ar_hrd != htons(ARPHRD_NETROM))
 			goto out;
 		break;
+#endif
+#endif
 	}
 
 	/* Understand only these message types */
@@ -847,7 +825,6 @@ static int arp_process(struct sk_buff *skb)
 	if (sip == 0) {
 		if (arp->ar_op == htons(ARPOP_REQUEST) &&
 		    inet_addr_type(tip) == RTN_LOCAL &&
-		    !arp_hidden(tip, dev) &&
 		    !arp_ignore(in_dev,dev,sip,tip))
 			arp_send(ARPOP_REPLY,ETH_P_ARP,tip,dev,tip,sha,dev->dev_addr,dev->dev_addr);
 		goto out;
@@ -868,8 +845,6 @@ static int arp_process(struct sk_buff *skb)
 					dont_send |= arp_ignore(in_dev,dev,sip,tip);
 				if (!dont_send && IN_DEV_ARPFILTER(in_dev))
 					dont_send |= arp_filter(sip,tip,dev);
-				if (!dont_send && skb->pkt_type != PACKET_HOST)
-					dont_send |= arp_hidden(tip,dev); 
 				if (!dont_send)
 					arp_send(ARPOP_REPLY,ETH_P_ARP,sip,dev,tip,sha,dev->dev_addr,sha);
 

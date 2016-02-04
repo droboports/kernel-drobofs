@@ -774,15 +774,12 @@ static struct irq_chip ioapic_chip;
 
 static void ioapic_register_intr(int irq, unsigned long trigger)
 {
-	if (trigger) {
-		irq_desc[irq].status |= IRQ_LEVEL;
+	if (trigger)
 		set_irq_chip_and_handler_name(irq, &ioapic_chip,
 					      handle_fasteoi_irq, "fasteoi");
-	} else {
-		irq_desc[irq].status &= ~IRQ_LEVEL;
+	else
 		set_irq_chip_and_handler_name(irq, &ioapic_chip,
 					      handle_edge_irq, "edge");
-	}
 }
 
 static void setup_IO_APIC_irq(int apic, int pin, unsigned int irq,

@@ -643,13 +643,6 @@ void __init reserve_node_zero(pg_data_t *pgdat)
 	 */
 	res_size = __pa(swapper_pg_dir) - PHYS_OFFSET;
 #endif
-
-#if defined(CONFIG_MV78200)
-      /* Top 0-128M for vxWorks 320-512M for shared mem */
-      reserve_bootmem_node(pgdat, 0x0, 0x08001000);
-      reserve_bootmem_node(pgdat, 0x14000000, 0x0c000000);
-#endif
-
 	if (res_size)
 		reserve_bootmem_node(pgdat, PHYS_OFFSET, res_size);
 }

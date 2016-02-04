@@ -2,17 +2,16 @@
  *
  * Name:	sktimer.c
  * Project:	Gigabit Ethernet Adapters, Event Scheduler Module
- * Version:	$Revision: 2.3 $
- * Date:	$Date: 2005/12/14 16:11:02 $
+ * Version:	$Revision: 1.14 $
+ * Date:	$Date: 2003/09/16 13:46:51 $
  * Purpose:	High level timer functions.
  *
  ******************************************************************************/
 
 /******************************************************************************
  *
- *	LICENSE:
  *	(C)Copyright 1998-2002 SysKonnect GmbH.
- *	(C)Copyright 2002-2004 Marvell.
+ *	(C)Copyright 2002-2003 Marvell.
  *
  *	This program is free software; you can redistribute it and/or modify
  *	it under the terms of the GNU General Public License as published by
@@ -20,16 +19,16 @@
  *	(at your option) any later version.
  *
  *	The information in this file is provided "AS IS" without warranty.
- *	/LICENSE
  *
  ******************************************************************************/
+
 
 /*
  *	Event queue and dispatcher
  */
 #if (defined(DEBUG) || ((!defined(LINT)) && (!defined(SK_SLIM))))
 static const char SysKonnectFileId[] =
-	"@(#) $Id: sktimer.c,v 2.3 2005/12/14 16:11:02 ibrueder Exp $ (C) Marvell.";
+	"@(#) $Id: sktimer.c,v 1.14 2003/09/16 13:46:51 rschmidt Exp $ (C) Marvell.";
 #endif
 
 #include "h/skdrv1st.h"		/* Driver Specific Definitions */
@@ -63,7 +62,7 @@ int		Level)		/* Init Level */
 {
 	switch (Level) {
 	case SK_INIT_DATA:
-		pAC->Tim.StQueue = 0;
+		pAC->Tim.StQueue = NULL;
 		break;
 	case SK_INIT_IO:
 		SkHwtInit(pAC, Ioc);
@@ -86,20 +85,22 @@ SK_TIMER	*pTimer)	/* Timer Pointer to be started */
 	SK_TIMER	**ppTimPrev;
 	SK_TIMER	*pTm;
 
-	/* remove timer from queue */
+	/*
+	 * remove timer from queue
+	 */
 	pTimer->TmActive = SK_FALSE;
-
+	
 	if (pAC->Tim.StQueue == pTimer && !pTimer->TmNext) {
 		SkHwtStop(pAC, Ioc);
 	}
-
+	
 	for (ppTimPrev = &pAC->Tim.StQueue; (pTm = *ppTimPrev);
 		ppTimPrev = &pTm->TmNext ) {
-
+		
 		if (pTm == pTimer) {
 			/*
 			 * Timer found in queue
-			 * - dequeue it
+			 * - dequeue it and
 			 * - correct delta of the next timer
 			 */
 			*ppTimPrev = pTm->TmNext;
@@ -120,7 +121,7 @@ void	SkTimerStart(
 SK_AC		*pAC,		/* Adapters context */
 SK_IOC		Ioc,		/* IoContext */
 SK_TIMER	*pTimer,	/* Timer Pointer to be started */
-SK_U32		Time,		/* Time Value (in microsec.) */
+SK_U32		Time,		/* Time value */
 SK_U32		Class,		/* Event Class for this timer */
 SK_U32		Event,		/* Event Value for this timer */
 SK_EVPARA	Para)		/* Event Parameter for this timer */
@@ -128,6 +129,11 @@ SK_EVPARA	Para)		/* Event Parameter for this timer */
 	SK_TIMER	**ppTimPrev;
 	SK_TIMER	*pTm;
 	SK_U32		Delta;
+
+	Time /= 16;		/* input is uS, clock ticks are 16uS */
+	
+	if (!Time)
+		Time = 1;
 
 	SkTimerStop(pAC, Ioc, pTimer);
 
@@ -137,26 +143,31 @@ SK_EVPARA	Para)		/* Event Parameter for this timer */
 	pTimer->TmActive = SK_TRUE;
 
 	if (!pAC->Tim.StQueue) {
-		/* first Timer to be started */
+		/* First Timer to be started */
 		pAC->Tim.StQueue = pTimer;
-		pTimer->TmNext = 0;
+		pTimer->TmNext = NULL;
 		pTimer->TmDelta = Time;
-
+		
 		SkHwtStart(pAC, Ioc, Time);
-
+		
 		return;
 	}
 
-	/* timer correction */
+	/*
+	 * timer correction
+	 */
 	timer_done(pAC, Ioc, 0);
 
-	/* find position in queue */
+	/*
+	 * find position in queue
+	 */
 	Delta = 0;
 	for (ppTimPrev = &pAC->Tim.StQueue; (pTm = *ppTimPrev);
 		ppTimPrev = &pTm->TmNext ) {
-
+		
 		if (Delta + pTm->TmDelta > Time) {
-			/* the timer needs to be inserted here */
+			/* Position found */
+			/* Here the timer needs to be inserted. */
 			break;
 		}
 		Delta += pTm->TmDelta;
@@ -168,7 +179,9 @@ SK_EVPARA	Para)		/* Event Parameter for this timer */
 	pTimer->TmDelta = Time - Delta;
 
 	if (pTm) {
-		/* there is a next timer:  correct its Delta value */
+		/* There is a next timer
+		 * -> correct its Delta value.
+		 */
 		pTm->TmDelta -= pTimer->TmDelta;
 	}
 
@@ -197,7 +210,7 @@ int		Restart)	/* Do we need to restart the Hardware timer ? */
 	int		Done = 0;
 
 	Delta = SkHwtRead(pAC, Ioc);
-
+	
 	ppLast = &pAC->Tim.StQueue;
 	pTm = pAC->Tim.StQueue;
 	while (pTm && !Done) {
@@ -215,13 +228,13 @@ int		Restart)	/* Do we need to restart the Hardware timer ? */
 			Done = 1;
 		}
 	}
-	*ppLast = 0;
+	*ppLast = NULL;
 	/*
 	 * pTm points to the first Timer that did not run out.
 	 * StQueue points to the first Timer that run out.
 	 */
 
-	for (pTComp = pAC->Tim.StQueue; pTComp; pTComp = pTComp->TmNext) {
+	for ( pTComp = pAC->Tim.StQueue; pTComp; pTComp = pTComp->TmNext) {
 		SkEventQueue(pAC,pTComp->TmClass, pTComp->TmEvent, pTComp->TmPara);
 	}
 

@@ -118,14 +118,13 @@ int x25_forward_data(int lci, struct x25_neigh *from, struct sk_buff *skb) {
 		goto out;
 
 	if ( (skbn = pskb_copy(skb, GFP_ATOMIC)) == NULL){
-		goto output;
+		goto out;
 
 	}
 	x25_transmit_link(skbn, nb);
 
-	rc = 1;
-output:
 	x25_neigh_put(nb);
+	rc = 1;
 out:
 	return rc;
 }

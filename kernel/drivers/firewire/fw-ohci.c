@@ -586,7 +586,7 @@ static void context_stop(struct context *ctx)
 			break;
 
 		fw_notify("context_stop: still active (0x%08x)\n", reg);
-		mdelay(1);
+		msleep(1);
 	}
 }
 
@@ -1934,12 +1934,14 @@ static int pci_suspend(struct pci_dev *pdev, pm_message_t state)
 	free_irq(pdev->irq, ohci);
 	err = pci_save_state(pdev);
 	if (err) {
-		fw_error("pci_save_state failed with %d\n", err);
+		fw_error("pci_save_state failed with %d", err);
 		return err;
 	}
 	err = pci_set_power_state(pdev, pci_choose_state(pdev, state));
-	if (err)
-		fw_error("pci_set_power_state failed with %d\n", err);
+	if (err) {
+		fw_error("pci_set_power_state failed with %d", err);
+		return err;
+	}
 
 	return 0;
 }
@@ -1953,7 +1955,7 @@ static int pci_resume(struct pci_dev *pdev)
 	pci_restore_state(pdev);
 	err = pci_enable_device(pdev);
 	if (err) {
-		fw_error("pci_enable_device failed with %d\n", err);
+		fw_error("pci_enable_device failed with %d", err);
 		return err;
 	}
 

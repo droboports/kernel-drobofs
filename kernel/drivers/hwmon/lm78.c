@@ -882,7 +882,7 @@ static int __init lm78_isa_device_add(unsigned short address)
 {
 	struct resource res = {
 		.start	= address,
-		.end	= address + LM78_EXTENT - 1,
+		.end	= address + LM78_EXTENT,
 		.name	= "lm78",
 		.flags	= IORESOURCE_IO,
 	};

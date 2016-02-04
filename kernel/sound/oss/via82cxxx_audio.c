@@ -2104,7 +2104,6 @@ static struct page * via_mm_nopage (struct vm_area_struct * vma,
 {
 	struct via_info *card = vma->vm_private_data;
 	struct via_channel *chan = &card->ch_out;
-	unsigned long max_bufs;
 	struct page *dmapage;
 	unsigned long pgoff;
 	int rd, wr;
@@ -2128,11 +2127,14 @@ static struct page * via_mm_nopage (struct vm_area_struct * vma,
 	rd = card->ch_in.is_mapped;
 	wr = card->ch_out.is_mapped;
 
-	max_bufs = chan->frag_number;
-	if (rd && wr)
-		max_bufs *= 2;
-	if (pgoff >= max_bufs)
-		return NOPAGE_SIGBUS;
+#ifndef VIA_NDEBUG
+	{
+	unsigned long max_bufs = chan->frag_number;
+	if (rd && wr) max_bufs *= 2;
+	/* via_dsp_mmap() should ensure this */
+	assert (pgoff < max_bufs);
+	}
+#endif
 
 	/* if full-duplex (read+write) and we have two sets of bufs,
 	 * then the playback buffers come first, sez soundcard.c */

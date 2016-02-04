@@ -31,6 +31,47 @@
 #include "hcd.h"
 #include "hub.h"
 
+struct usb_hub {
+	struct device		*intfdev;	/* the "interface" device */
+	struct usb_device	*hdev;
+	struct urb		*urb;		/* for interrupt polling pipe */
+
+	/* buffer for urb ... with extra space in case of babble */
+	char			(*buffer)[8];
+	dma_addr_t		buffer_dma;	/* DMA address for buffer */
+	union {
+		struct usb_hub_status	hub;
+		struct usb_port_status	port;
+	}			*status;	/* buffer for status reports */
+	struct mutex		status_mutex;	/* for the status buffer */
+
+	int			error;		/* last reported error */
+	int			nerrors;	/* track consecutive errors */
+
+	struct list_head	event_list;	/* hubs w/data or errs ready */
+	unsigned long		event_bits[1];	/* status change bitmask */
+	unsigned long		change_bits[1];	/* ports with logical connect
+							status change */
+	unsigned long		busy_bits[1];	/* ports being reset or
+							resumed */
+#if USB_MAXCHILDREN > 31 /* 8*sizeof(unsigned long) - 1 */
+#error event_bits[] is too short!
+#endif
+
+	struct usb_hub_descriptor *descriptor;	/* class descriptor */
+	struct usb_tt		tt;		/* Transaction Translator */
+
+	unsigned		mA_per_port;	/* current for each child */
+
+	unsigned		limited_power:1;
+	unsigned		quiescing:1;
+	unsigned		activating:1;
+
+	unsigned		has_indicators:1;
+	u8			indicator[USB_MAXCHILDREN];
+	struct delayed_work	leds;
+};
+
 
 /* Protect struct usb_device->state and ->children members
  * Note: Both are also protected by ->dev.sem, except that ->state can
@@ -75,12 +116,6 @@ module_param(use_both_schemes, bool, S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(use_both_schemes,
 		"try the other device initialization scheme if the "
 		"first one fails");
-
-/* Mutual exclusion for EHCI CF initialization.  This interferes with
- * port reset on some companion controllers.
- */
-DECLARE_RWSEM(ehci_cf_port_reset_rwsem);
-EXPORT_SYMBOL_GPL(ehci_cf_port_reset_rwsem);
 
 
 static inline char *portspeed(int portstatus)
@@ -1353,10 +1388,6 @@ int usb_new_device(struct usb_device *udev)
 	udev->dev.devt = MKDEV(USB_DEVICE_MAJOR,
 			(((udev->bus->busnum-1) * 128) + (udev->devnum-1)));
 
-	/* Increment the parent's count of unsuspended children */
-	if (udev->parent)
-		usb_autoresume_device(udev->parent);
-
 	/* Register the device.  The device driver is responsible
 	 * for adding the device files to sysfs and for configuring
 	 * the device.
@@ -1364,10 +1395,12 @@ int usb_new_device(struct usb_device *udev)
 	err = device_add(&udev->dev);
 	if (err) {
 		dev_err(&udev->dev, "can't device_add, error %d\n", err);
-		if (udev->parent)
-			usb_autosuspend_device(udev->parent);
 		goto fail;
 	}
+
+	/* Increment the parent's count of unsuspended children */
+	if (udev->parent)
+		usb_autoresume_device(udev->parent);
 
 exit:
 	return err;
@@ -1478,11 +1511,6 @@ static int hub_port_reset(struct usb_hub *hub, int port1,
 {
 	int i, status;
 
-	/* Block EHCI CF initialization during the port reset.
-	 * Some companion controllers don't like it when they mix.
-	 */
-	down_read(&ehci_cf_port_reset_rwsem);
-
 	/* Reset the port */
 	for (i = 0; i < PORT_RESET_TRIES; i++) {
 		status = set_port_feature(hub->hdev,
@@ -1513,7 +1541,7 @@ static int hub_port_reset(struct usb_hub *hub, int port1,
 			usb_set_device_state(udev, status
 					? USB_STATE_NOTATTACHED
 					: USB_STATE_DEFAULT);
-			goto done;
+			return status;
 		}
 
 		dev_dbg (hub->intfdev,
@@ -1526,8 +1554,6 @@ static int hub_port_reset(struct usb_hub *hub, int port1,
 		"Cannot enable port %i.  Maybe the USB cable is bad?\n",
 		port1);
 
- done:
-	up_read(&ehci_cf_port_reset_rwsem);
 	return status;
 }
 

@@ -125,8 +125,6 @@ struct pstore {
 	uint32_t callback_count;
 	struct commit_callback *callbacks;
 	struct dm_io_client *io_client;
-
-	struct workqueue_struct *metadata_wq;
 };
 
 static inline unsigned int sectors_to_pages(unsigned int sectors)
@@ -158,24 +156,10 @@ static void free_area(struct pstore *ps)
 	ps->area = NULL;
 }
 
-struct mdata_req {
-	struct io_region *where;
-	struct dm_io_request *io_req;
-	struct work_struct work;
-	int result;
-};
-
-static void do_metadata(struct work_struct *work)
-{
-	struct mdata_req *req = container_of(work, struct mdata_req, work);
-
-	req->result = dm_io(req->io_req, 1, req->where, NULL);
-}
-
 /*
  * Read or write a chunk aligned and sized block of data from a device.
  */
-static int chunk_io(struct pstore *ps, uint32_t chunk, int rw, int metadata)
+static int chunk_io(struct pstore *ps, uint32_t chunk, int rw)
 {
 	struct io_region where = {
 		.bdev = ps->snap->cow->bdev,
@@ -189,23 +173,8 @@ static int chunk_io(struct pstore *ps, uint32_t chunk, int rw, int metadata)
 		.client = ps->io_client,
 		.notify.fn = NULL,
 	};
-	struct mdata_req req;
 
-	if (!metadata)
-		return dm_io(&io_req, 1, &where, NULL);
-
-	req.where = &where;
-	req.io_req = &io_req;
-
-	/*
-	 * Issue the synchronous I/O from a different thread
-	 * to avoid generic_make_request recursion.
-	 */
-	INIT_WORK(&req.work, do_metadata);
-	queue_work(ps->metadata_wq, &req.work);
-	flush_workqueue(ps->metadata_wq);
-
-	return req.result;
+	return dm_io(&io_req, 1, &where, NULL);
 }
 
 /*
@@ -220,7 +189,7 @@ static int area_io(struct pstore *ps, uint32_t area, int rw)
 	/* convert a metadata area index to a chunk index */
 	chunk = 1 + ((ps->exceptions_per_area + 1) * area);
 
-	r = chunk_io(ps, chunk, rw, 0);
+	r = chunk_io(ps, chunk, rw);
 	if (r)
 		return r;
 
@@ -261,7 +230,7 @@ static int read_header(struct pstore *ps, int *new_snapshot)
 	if (r)
 		return r;
 
-	r = chunk_io(ps, 0, READ, 1);
+	r = chunk_io(ps, 0, READ);
 	if (r)
 		goto bad;
 
@@ -323,7 +292,7 @@ static int write_header(struct pstore *ps)
 	dh->version = cpu_to_le32(ps->version);
 	dh->chunk_size = cpu_to_le32(ps->snap->chunk_size);
 
-	return chunk_io(ps, 0, WRITE, 1);
+	return chunk_io(ps, 0, WRITE);
 }
 
 /*
@@ -440,7 +409,6 @@ static void persistent_destroy(struct exception_store *store)
 {
 	struct pstore *ps = get_info(store);
 
-	destroy_workqueue(ps->metadata_wq);
 	dm_io_client_destroy(ps->io_client);
 	vfree(ps->callbacks);
 	free_area(ps);
@@ -489,17 +457,16 @@ static int persistent_read_metadata(struct exception_store *store)
 		/*
 		 * Sanity checks.
 		 */
+		if (!ps->valid) {
+			DMWARN("snapshot is marked invalid");
+			return -EINVAL;
+		}
+
 		if (ps->version != SNAPSHOT_DISK_VERSION) {
 			DMWARN("unable to handle snapshot disk version %d",
 			       ps->version);
 			return -EINVAL;
 		}
-
-		/*
-		 * Metadata are valid, but snapshot is invalidated
-		 */
-		if (!ps->valid)
-			return 1;
 
 		/*
 		 * Read the metadata.
@@ -620,12 +587,6 @@ int dm_create_persistent(struct exception_store *store)
 	ps->callback_count = 0;
 	atomic_set(&ps->pending_count, 0);
 	ps->callbacks = NULL;
-
-	ps->metadata_wq = create_singlethread_workqueue("ksnaphd");
-	if (!ps->metadata_wq) {
-		DMERR("couldn't start header metadata update thread");
-		return -ENOMEM;
-	}
 
 	store->destroy = persistent_destroy;
 	store->read_metadata = persistent_read_metadata;

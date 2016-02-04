@@ -66,15 +66,11 @@
 # endif
 #endif
 
-#ifdef CONFIG_ARCH_FEROCEON
-# define MULTI_USER 1
-#else
-# ifdef CONFIG_CPU_COPY_V4WB
+#ifdef CONFIG_CPU_COPY_V4WB
 # ifdef _USER
 #  define MULTI_USER 1
 # else
 #  define _USER v4wb
-#  endif
 # endif
 #endif
 

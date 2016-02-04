@@ -1,5 +1,5 @@
 /*
- *  linux/drivers/mmc/host/mmci.h - ARM PrimeCell MMCI PL180/1 driver
+ *  linux/drivers/mmc/mmci.h - ARM PrimeCell MMCI PL180/1 driver
  *
  *  Copyright (C) 2003 Deep Blue Solutions, Ltd, All Rights Reserved.
  *
@@ -169,7 +169,7 @@ static inline char *mmci_kmap_atomic(struct mmci_host *host, unsigned long *flag
 	struct scatterlist *sg = host->sg_ptr;
 
 	local_irq_save(*flags);
-	return kmap_atomic(sg_page(sg), KM_BIO_SRC_IRQ) + sg->offset;
+	return kmap_atomic(sg->page, KM_BIO_SRC_IRQ) + sg->offset;
 }
 
 static inline void mmci_kunmap_atomic(struct mmci_host *host, void *buffer, unsigned long *flags)

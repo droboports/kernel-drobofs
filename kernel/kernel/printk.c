@@ -33,7 +33,6 @@
 #include <linux/jiffies.h>
 
 #include <asm/uaccess.h>
-#include <asm/arch/uncompress.h>
 
 #define __LOG_BUF_LEN	(1 << CONFIG_LOG_BUF_SHIFT)
 
@@ -513,7 +512,7 @@ asmlinkage int printk(const char *fmt, ...)
 
 /* cpu currently holding logbuf_lock */
 static volatile unsigned int printk_cpu = UINT_MAX;
-int slava;
+
 asmlinkage int vprintk(const char *fmt, va_list args)
 {
 	unsigned long flags;
@@ -536,9 +535,7 @@ asmlinkage int vprintk(const char *fmt, va_list args)
 
 	/* Emit the output into the temporary buffer */
 	printed_len = vscnprintf(printk_buf, sizeof(printk_buf), fmt, args);
-	{
-		if (slava) putstr(printk_buf);
-	}
+
 	/*
 	 * Copy the output into log_buf.  If the caller didn't provide
 	 * appropriate log level tags, we insert them here

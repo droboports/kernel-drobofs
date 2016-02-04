@@ -56,18 +56,12 @@ static int signalfd_lock(struct signalfd_ctx *ctx, struct signalfd_lockctx *lk)
 		sighand = lock_task_sighand(lk->tsk, &lk->flags);
 	rcu_read_unlock();
 
-	if (!sighand)
-		return 0;
-
-	if (!ctx->tsk) {
+	if (sighand && !ctx->tsk) {
 		unlock_task_sighand(lk->tsk, &lk->flags);
-		return 0;
+		sighand = NULL;
 	}
 
-	if (lk->tsk->tgid == current->tgid)
-		lk->tsk = current;
-
-	return 1;
+	return sighand != NULL;
 }
 
 static void signalfd_unlock(struct signalfd_lockctx *lk)
@@ -337,7 +331,7 @@ asmlinkage long sys_signalfd(int ufd, sigset_t __user *user_mask, size_t sizemas
 
 		init_waitqueue_head(&ctx->wqh);
 		ctx->sigmask = sigmask;
-		ctx->tsk = current->group_leader;
+		ctx->tsk = current;
 
 		sighand = current->sighand;
 		/*

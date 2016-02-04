@@ -18,11 +18,7 @@
 
 unsigned int __machine_arch_type;
 
-
-/*#include <linux/string.h>*/
-#define NULL        ((void *) 0)
-#define size_t    unsigned int
-#define memzero(p,n) ({ if ((n) != 0) __memzero((p),(n)); (p); })
+#include <linux/string.h>
 
 #ifdef STANDALONE_DEBUG
 #define putstr printf
@@ -73,7 +69,6 @@ static void icedcc_putc(int ch)
 #define flush()	do { } while (0)
 #endif
 
-#ifndef CONFIG_ARCH_FEROCEON
 static void putstr(const char *ptr)
 {
 	char c;
@@ -86,7 +81,6 @@ static void putstr(const char *ptr)
 
 	flush();
 }
-#endif
 
 #endif
 

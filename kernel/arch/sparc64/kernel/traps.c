@@ -2134,20 +2134,12 @@ static void user_instruction_dump (unsigned int __user *pc)
 void show_stack(struct task_struct *tsk, unsigned long *_ksp)
 {
 	unsigned long pc, fp, thread_base, ksp;
-	struct thread_info *tp;
+	void *tp = task_stack_page(tsk);
 	struct reg_window *rw;
 	int count = 0;
 
 	ksp = (unsigned long) _ksp;
-	if (!tsk)
-		tsk = current;
-	tp = task_thread_info(tsk);
-	if (ksp == 0UL) {
-		if (tsk == current)
-			asm("mov %%fp, %0" : "=r" (ksp));
-		else
-			ksp = tp->ksp;
-	}
+
 	if (tp == current_thread_info())
 		flushw_all();
 
@@ -2176,7 +2168,11 @@ void show_stack(struct task_struct *tsk, unsigned long *_ksp)
 
 void dump_stack(void)
 {
-	show_stack(current, NULL);
+	unsigned long *ksp;
+
+	__asm__ __volatile__("mov	%%fp, %0"
+			     : "=r" (ksp));
+	show_stack(current, ksp);
 }
 
 EXPORT_SYMBOL(dump_stack);

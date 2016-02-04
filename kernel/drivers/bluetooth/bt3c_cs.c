@@ -344,7 +344,10 @@ static irqreturn_t bt3c_interrupt(int irq, void *dev_inst)
 	unsigned int iobase;
 	int iir;
 
-	BUG_ON(!info->hdev);
+	if (!info || !info->hdev) {
+		BT_ERR("Call of irq %d for unknown device", irq);
+		return IRQ_NONE;
+	}
 
 	iobase = info->p_dev->io.BasePort1;
 

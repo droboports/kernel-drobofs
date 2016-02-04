@@ -709,8 +709,7 @@ static void mark_nosave_pages(struct memory_bitmap *bm)
 				region->end_pfn << PAGE_SHIFT);
 
 		for (pfn = region->start_pfn; pfn < region->end_pfn; pfn++)
-			if (pfn_valid(pfn))
-				memory_bm_set_bit(bm, pfn);
+			memory_bm_set_bit(bm, pfn);
 	}
 }
 

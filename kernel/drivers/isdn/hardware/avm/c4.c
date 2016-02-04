@@ -727,7 +727,6 @@ static void c4_send_init(avmcard *card)
 {
 	struct sk_buff *skb;
 	void *p;
-	unsigned long flags;
 
 	skb = alloc_skb(15, GFP_ATOMIC);
 	if (!skb) {
@@ -745,15 +744,12 @@ static void c4_send_init(avmcard *card)
 	skb_put(skb, (u8 *)p - (u8 *)skb->data);
 
 	skb_queue_tail(&card->dma->send_queue, skb);
-	spin_lock_irqsave(&card->lock, flags);
 	c4_dispatch_tx(card);
-	spin_unlock_irqrestore(&card->lock, flags);
 }
 
 static int queue_sendconfigword(avmcard *card, u32 val)
 {
 	struct sk_buff *skb;
-	unsigned long flags;
 	void *p;
 
 	skb = alloc_skb(3+4, GFP_ATOMIC);
@@ -770,9 +766,7 @@ static int queue_sendconfigword(avmcard *card, u32 val)
 	skb_put(skb, (u8 *)p - (u8 *)skb->data);
 
 	skb_queue_tail(&card->dma->send_queue, skb);
-	spin_lock_irqsave(&card->lock, flags);
 	c4_dispatch_tx(card);
-	spin_unlock_irqrestore(&card->lock, flags);
 	return 0;
 }
 
@@ -992,9 +986,7 @@ static void c4_release_appl(struct capi_ctr *ctrl, u16 appl)
 	struct sk_buff *skb;
 	void *p;
 
-	spin_lock_irqsave(&card->lock, flags);
 	capilib_release_appl(&cinfo->ncci_head, appl);
-	spin_unlock_irqrestore(&card->lock, flags);
 
 	if (ctrl->cnr == card->cardnr) {
 		skb = alloc_skb(7, GFP_ATOMIC);
@@ -1027,8 +1019,7 @@ static u16 c4_send_message(struct capi_ctr *ctrl, struct sk_buff *skb)
 	u16 retval = CAPI_NOERROR;
 	unsigned long flags;
 
-	spin_lock_irqsave(&card->lock, flags);
-	if (CAPIMSG_CMD(skb->data) == CAPI_DATA_B3_REQ) {
+ 	if (CAPIMSG_CMD(skb->data) == CAPI_DATA_B3_REQ) {
 		retval = capilib_data_b3_req(&cinfo->ncci_head,
 					     CAPIMSG_APPID(skb->data),
 					     CAPIMSG_NCCI(skb->data),
@@ -1036,9 +1027,10 @@ static u16 c4_send_message(struct capi_ctr *ctrl, struct sk_buff *skb)
 	}
 	if (retval == CAPI_NOERROR) {
 		skb_queue_tail(&card->dma->send_queue, skb);
+		spin_lock_irqsave(&card->lock, flags);
 		c4_dispatch_tx(card);
+		spin_unlock_irqrestore(&card->lock, flags);
 	}
-	spin_unlock_irqrestore(&card->lock, flags);
 	return retval;
 }
 

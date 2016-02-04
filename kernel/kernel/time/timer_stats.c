@@ -319,9 +319,8 @@ static int tstats_show(struct seq_file *m, void *v)
 		ms = 1;
 
 	if (events && period.tv_sec)
-		seq_printf(m, "%ld total events, %ld.%03ld events/sec\n",
-			   events, events * 1000 / ms,
-			   (events * 1000000 / ms) % 1000);
+		seq_printf(m, "%ld total events, %ld.%ld events/sec\n", events,
+			   events / period.tv_sec, events * 1000 / ms);
 	else
 		seq_printf(m, "%ld total events\n", events);
 
@@ -392,7 +391,7 @@ static struct file_operations tstats_fops = {
 	.read		= seq_read,
 	.write		= tstats_write,
 	.llseek		= seq_lseek,
-	.release	= single_release,
+	.release	= seq_release,
 };
 
 void __init init_timer_stats(void)

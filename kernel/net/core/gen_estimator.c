@@ -79,27 +79,27 @@
 
 struct gen_estimator
 {
-	struct list_head	list;
+	struct gen_estimator	*next;
 	struct gnet_stats_basic	*bstats;
 	struct gnet_stats_rate_est	*rate_est;
 	spinlock_t		*stats_lock;
+	unsigned		interval;
 	int			ewma_log;
 	u64			last_bytes;
 	u32			last_packets;
 	u32			avpps;
 	u32			avbps;
-	struct rcu_head		e_rcu;
 };
 
 struct gen_estimator_head
 {
 	struct timer_list	timer;
-	struct list_head	list;
+	struct gen_estimator	*list;
 };
 
 static struct gen_estimator_head elist[EST_MAX_INTERVAL+1];
 
-/* Protects against NULL dereference */
+/* Estimator array lock */
 static DEFINE_RWLOCK(est_lock);
 
 static void est_timer(unsigned long arg)
@@ -107,17 +107,13 @@ static void est_timer(unsigned long arg)
 	int idx = (int)arg;
 	struct gen_estimator *e;
 
-	rcu_read_lock();
-	list_for_each_entry_rcu(e, &elist[idx].list, list) {
+	read_lock(&est_lock);
+	for (e = elist[idx].list; e; e = e->next) {
 		u64 nbytes;
 		u32 npackets;
 		u32 rate;
 
 		spin_lock(e->stats_lock);
-		read_lock(&est_lock);
-		if (e->bstats == NULL)
-			goto skip;
-
 		nbytes = e->bstats->bytes;
 		npackets = e->bstats->packets;
 		rate = (nbytes - e->last_bytes)<<(7 - idx);
@@ -129,14 +125,11 @@ static void est_timer(unsigned long arg)
 		e->last_packets = npackets;
 		e->avpps += ((long)rate - (long)e->avpps) >> e->ewma_log;
 		e->rate_est->pps = (e->avpps+0x1FF)>>10;
-skip:
-		read_unlock(&est_lock);
 		spin_unlock(e->stats_lock);
 	}
 
-	if (!list_empty(&elist[idx].list))
-		mod_timer(&elist[idx].timer, jiffies + ((HZ<<idx)/4));
-	rcu_read_unlock();
+	mod_timer(&elist[idx].timer, jiffies + ((HZ<<idx)/4));
+	read_unlock(&est_lock);
 }
 
 /**
@@ -153,17 +146,12 @@ skip:
  * &rate_est with the statistics lock grabed during this period.
  *
  * Returns 0 on success or a negative error code.
- *
- * NOTE: Called under rtnl_mutex
  */
 int gen_new_estimator(struct gnet_stats_basic *bstats,
-		      struct gnet_stats_rate_est *rate_est,
-		      spinlock_t *stats_lock,
-		      struct rtattr *opt)
+	struct gnet_stats_rate_est *rate_est, spinlock_t *stats_lock, struct rtattr *opt)
 {
 	struct gen_estimator *est;
 	struct gnet_estimator *parm = RTA_DATA(opt);
-	int idx;
 
 	if (RTA_PAYLOAD(opt) < sizeof(*parm))
 		return -EINVAL;
@@ -175,7 +163,7 @@ int gen_new_estimator(struct gnet_stats_basic *bstats,
 	if (est == NULL)
 		return -ENOBUFS;
 
-	idx = parm->interval + 2;
+	est->interval = parm->interval + 2;
 	est->bstats = bstats;
 	est->rate_est = rate_est;
 	est->stats_lock = stats_lock;
@@ -185,23 +173,18 @@ int gen_new_estimator(struct gnet_stats_basic *bstats,
 	est->last_packets = bstats->packets;
 	est->avpps = rate_est->pps<<10;
 
-	if (!elist[idx].timer.function) {
-		INIT_LIST_HEAD(&elist[idx].list);
-		setup_timer(&elist[idx].timer, est_timer, idx);
+	est->next = elist[est->interval].list;
+	if (est->next == NULL) {
+		init_timer(&elist[est->interval].timer);
+		elist[est->interval].timer.data = est->interval;
+		elist[est->interval].timer.expires = jiffies + ((HZ<<est->interval)/4);
+		elist[est->interval].timer.function = est_timer;
+		add_timer(&elist[est->interval].timer);
 	}
-
-	if (list_empty(&elist[idx].list))
-		mod_timer(&elist[idx].timer, jiffies + ((HZ<<idx)/4));
-
-	list_add_rcu(&est->list, &elist[idx].list);
+	write_lock_bh(&est_lock);
+	elist[est->interval].list = est;
+	write_unlock_bh(&est_lock);
 	return 0;
-}
-
-static void __gen_kill_estimator(struct rcu_head *head)
-{
-	struct gen_estimator *e = container_of(head,
-					struct gen_estimator, e_rcu);
-	kfree(e);
 }
 
 /**
@@ -211,32 +194,31 @@ static void __gen_kill_estimator(struct rcu_head *head)
  *
  * Removes the rate estimator specified by &bstats and &rate_est
  * and deletes the timer.
- *
- * NOTE: Called under rtnl_mutex
  */
 void gen_kill_estimator(struct gnet_stats_basic *bstats,
 	struct gnet_stats_rate_est *rate_est)
 {
 	int idx;
-	struct gen_estimator *e, *n;
+	struct gen_estimator *est, **pest;
 
 	for (idx=0; idx <= EST_MAX_INTERVAL; idx++) {
-
-		/* Skip non initialized indexes */
-		if (!elist[idx].timer.function)
-			continue;
-
-		list_for_each_entry_safe(e, n, &elist[idx].list, list) {
-			if (e->rate_est != rate_est || e->bstats != bstats)
+		int killed = 0;
+		pest = &elist[idx].list;
+		while ((est=*pest) != NULL) {
+			if (est->rate_est != rate_est || est->bstats != bstats) {
+				pest = &est->next;
 				continue;
+			}
 
 			write_lock_bh(&est_lock);
-			e->bstats = NULL;
+			*pest = est->next;
 			write_unlock_bh(&est_lock);
 
-			list_del_rcu(&e->list);
-			call_rcu(&e->e_rcu, __gen_kill_estimator);
+			kfree(est);
+			killed++;
 		}
+		if (killed && elist[idx].list == NULL)
+			del_timer(&elist[idx].timer);
 	}
 }
 

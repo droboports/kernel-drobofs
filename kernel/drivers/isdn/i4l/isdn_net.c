@@ -2126,7 +2126,7 @@ isdn_net_find_icall(int di, int ch, int idx, setup_parm *setup)
 	u_long flags;
 	isdn_net_dev *p;
 	isdn_net_phone *n;
-	char nr[ISDN_MSNLEN];
+	char nr[32];
 	char *my_eaz;
 
 	/* Search name in netdev-chain */
@@ -2135,7 +2135,7 @@ isdn_net_find_icall(int di, int ch, int idx, setup_parm *setup)
 		nr[1] = '\0';
 		printk(KERN_INFO "isdn_net: Incoming call without OAD, assuming '0'\n");
 	} else
-		strlcpy(nr, setup->phone, ISDN_MSNLEN);
+		strcpy(nr, setup->phone);
 	si1 = (int) setup->si1;
 	si2 = (int) setup->si2;
 	if (!setup->eazmsn[0]) {
@@ -2802,7 +2802,7 @@ isdn_net_setcfg(isdn_net_ioctl_cfg * cfg)
 				chidx = -1;
 			}
 		}
-		strlcpy(lp->msn, cfg->eaz, sizeof(lp->msn));
+		strcpy(lp->msn, cfg->eaz);
 		lp->pre_device = drvidx;
 		lp->pre_channel = chidx;
 		lp->onhtime = cfg->onhtime;
@@ -2951,7 +2951,7 @@ isdn_net_addphone(isdn_net_ioctl_phone * phone)
 	if (p) {
 		if (!(n = kmalloc(sizeof(isdn_net_phone), GFP_KERNEL)))
 			return -ENOMEM;
-		strlcpy(n->num, phone->phone, sizeof(n->num));
+		strcpy(n->num, phone->phone);
 		n->next = p->local->phone[phone->outgoing & 1];
 		p->local->phone[phone->outgoing & 1] = n;
 		return 0;

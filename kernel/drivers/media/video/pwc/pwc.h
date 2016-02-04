@@ -193,7 +193,6 @@ struct pwc_device
    char vsnapshot;		/* snapshot mode */
    char vsync;			/* used by isoc handler */
    char vmirror;		/* for ToUCaM series */
-	char unplugged;
 
    int cmd_len;
    unsigned char cmd_buf[13];

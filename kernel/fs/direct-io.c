@@ -36,7 +36,7 @@
 #include <linux/rwsem.h>
 #include <linux/uio.h>
 #include <asm/atomic.h>
-#include <linux/swap.h>
+
 /*
  * How many user pages to map in one call to get_user_pages().  This determines
  * the size of a structure on the stack.
@@ -141,33 +141,6 @@ static inline unsigned dio_pages_present(struct dio *dio)
 	return dio->tail - dio->head;
 }
 
-/* 
- * Get kernel pages.
- */
-static int get_ker_pages(struct task_struct *tsk, struct mm_struct *mm,
-                unsigned long start, int len, int write, int force,
-                struct page **pages, struct vm_area_struct **vmas)
-{
-        int i = 0;
-
-        do {
-                if (pages) {
-                        pages[i] = virt_to_page(start);
-
-                        if (!pfn_valid(page_to_pfn(pages[i]))) {
-                                return i;
-                        }
-			get_page(pages[i]);
-                }
-                i++;
-                start += PAGE_SIZE;
-                len--;
-        } while(len );
-
-        return i;
-}
-
-
 /*
  * Go grab and pin some userspace pages.   Typically we'll get 64 at a time.
  */
@@ -177,36 +150,17 @@ static int dio_refill_pages(struct dio *dio)
 	int nr_pages;
 
 	nr_pages = min(dio->total_pages - dio->curr_page, DIO_PAGES);
-
-        /* If the page is a kernel page then we must give it a special treat. */
-        if ( virt_addr_valid(dio->curr_user_address) )
-        {
-                down_read(&init_mm.mmap_sem);
-                ret = get_ker_pages(
-                        current,                        /* Task for fault acounting */
-                        &init_mm,                       /* whose pages? */
-                        dio->curr_user_address,         /* Where from? */
-                        nr_pages,                       /* How many pages? */
-                        dio->rw == READ,                /* Write to memory? */
-                        0,                              /* force (?) */
-                        &dio->pages[0],
-                        NULL);                          /* vmas */
-                up_read(&init_mm.mmap_sem);
-                
-        } else {
-                down_read(&current->mm->mmap_sem);
-                ret = get_user_pages(
-                        current,                        /* Task for fault acounting */
-                        current->mm,                    /* whose pages? */
-                        dio->curr_user_address,         /* Where from? */
-                        nr_pages,                       /* How many pages? */
-                        dio->rw == READ,                /* Write to memory? */
-                        0,                              /* force (?) */
-                        &dio->pages[0],
-                        NULL);                          /* vmas */
-                up_read(&current->mm->mmap_sem);
-
-        }
+	down_read(&current->mm->mmap_sem);
+	ret = get_user_pages(
+		current,			/* Task for fault acounting */
+		current->mm,			/* whose pages? */
+		dio->curr_user_address,		/* Where from? */
+		nr_pages,			/* How many pages? */
+		dio->rw == READ,		/* Write to memory? */
+		0,				/* force (?) */
+		&dio->pages[0],
+		NULL);				/* vmas */
+	up_read(&current->mm->mmap_sem);
 
 	if (ret < 0 && dio->blocks_available && (dio->rw & WRITE)) {
 		struct page *page = ZERO_PAGE(dio->curr_user_address);
@@ -414,9 +368,8 @@ static void dio_bio_submit(struct dio *dio)
  */
 static void dio_cleanup(struct dio *dio)
 {
-	while (dio_pages_present(dio)) 
+	while (dio_pages_present(dio))
 		page_cache_release(dio_get_page(dio));
-	
 }
 
 /*

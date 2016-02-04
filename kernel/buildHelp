@@ -1,6 +1,0 @@
-do the following commands
-
-make mrproper CROSS_COMPILE=arm-none-linux-gnueabi-
-make mv78200_defconfig
-make uImage CROSS_COMPILE=arm-none-linux-gnueabi-
-

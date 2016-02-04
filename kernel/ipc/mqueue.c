@@ -1014,8 +1014,6 @@ asmlinkage long sys_mq_notify(mqd_t mqdes,
 			return -EINVAL;
 		}
 		if (notification.sigev_notify == SIGEV_THREAD) {
-			long timeo;
-
 			/* create the notify skb */
 			nc = alloc_skb(NOTIFY_COOKIE_LEN, GFP_KERNEL);
 			ret = -ENOMEM;
@@ -1044,8 +1042,8 @@ retry:
 				goto out;
 			}
 
-			timeo = MAX_SCHEDULE_TIMEOUT;
-			ret = netlink_attachskb(sock, nc, 0, &timeo, NULL);
+			ret = netlink_attachskb(sock, nc, 0,
+					MAX_SCHEDULE_TIMEOUT, NULL);
 			if (ret == 1)
 		       		goto retry;
 			if (ret) {

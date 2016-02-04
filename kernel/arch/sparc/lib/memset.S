@@ -162,7 +162,7 @@ __bzero:
 8:
 	 add	%o0, 1, %o0
 	subcc	%o1, 1, %o1
-	bne	8b
+	bne,a	8b
 	 EX(stb	%g3, [%o0 - 1], add %o1, 1)
 0:
 	retl

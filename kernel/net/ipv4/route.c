@@ -108,16 +108,6 @@
 #include <linux/sysctl.h>
 #endif
 
-#ifdef CONFIG_MV_ETH_NFP
-extern int fp_rule_db_init(u32 db_size);
-extern int fp_arp_db_init(u32 db_size);
-extern int fp_routing_info_set(u32 src_ip, u32 dst_ip, u32 def_gtw_ip, 
-				int ingress_if, int egress_if);
-extern int fp_routing_info_delete(u32 src_ip, u32 dst_ip);
-extern int fp_is_route_confirmed(u32 src_ip, u32 dst_ip);
-extern int fp_disable_flag;
-#endif /* CONFIG_MV_ETH_NFP */
-
 #define RT_FL_TOS(oldflp) \
     ((u32)(oldflp->fl4_tos & (IPTOS_RT_MASK | RTO_ONLINK)))
 
@@ -506,13 +496,6 @@ static const struct file_operations rt_cpu_seq_fops = {
 static __inline__ void rt_free(struct rtable *rt)
 {
 	multipath_remove(rt);
-
-#ifdef CONFIG_MV_ETH_NFP
-	if (!(rt->rt_flags & (RTCF_MULTICAST | RTCF_BROADCAST | RTCF_LOCAL | RTCF_REJECT))) {
-		fp_routing_info_delete(rt->rt_src, rt->rt_dst);
-	}
-#endif /* CONFIG_MV_ETH_NFP */
-
 	call_rcu_bh(&rt->u.dst.rcu_head, dst_rcu_free);
 }
 
@@ -549,13 +532,6 @@ static int rt_may_expire(struct rtable *rth, unsigned long tmo1, unsigned long t
 	if (rth->u.dst.expires &&
 	    time_after_eq(jiffies, rth->u.dst.expires))
 		goto out;
-
-#ifdef CONFIG_MV_ETH_NFP
-	if (!(rth->rt_flags & (RTCF_MULTICAST | RTCF_BROADCAST | RTCF_LOCAL | RTCF_REJECT))) {
-		if (fp_is_route_confirmed(rth->rt_src, rth->rt_dst))
-			rth->u.dst.lastuse = jiffies;
-	}
-#endif /* CONFIG_MV_ETH_NFP */
 
 	age = jiffies - rth->u.dst.lastuse;
 	ret = 0;
@@ -784,15 +760,7 @@ static void rt_secret_rebuild(unsigned long dummy)
 {
 	unsigned long now = jiffies;
 
-#ifdef CONFIG_MV_ETH_NFP
-	/* If NFP enabled doesn't flush */
-    	if(fp_disable_flag)
-#endif /* CONFIG_MV_ETH_NFP */
-    	{	
-		/*printk("rt_cache_flush: jiffies = 0x%x\n", now);*/
-		rt_cache_flush(0);
-    	}
-
+	rt_cache_flush(0);
 	mod_timer(&rt_secret_timer, now + ip_rt_secret_interval);
 }
 
@@ -1837,14 +1805,6 @@ static inline int __mkroute_input(struct sk_buff *skb,
 	rth->rt_flags = flags;
 
 	*result = rth;
-
-#ifdef CONFIG_MV_ETH_NFP	
-	if (!(rth->rt_flags & (RTCF_MULTICAST | RTCF_BROADCAST | RTCF_LOCAL | RTCF_REJECT))) {
-		fp_routing_info_set(	rth->rt_src, rth->rt_dst, 
-					rth->rt_gateway, rth->rt_iif, rth->u.dst.dev->ifindex);
-	}
-#endif /* CONFIG_MV_ETH_NFP */
-
 	err = 0;
  cleanup:
 	/* release the working reference to the output device */
@@ -2925,10 +2885,11 @@ int ip_rt_dump(struct sk_buff *skb,  struct netlink_callback *cb)
 	int idx, s_idx;
 
 	s_h = cb->args[0];
-	if (s_h < 0)
-		s_h = 0;
 	s_idx = idx = cb->args[1];
-	for (h = s_h; h <= rt_hash_mask; h++) {
+	for (h = 0; h <= rt_hash_mask; h++) {
+		if (h < s_h) continue;
+		if (h > s_h)
+			s_idx = 0;
 		rcu_read_lock_bh();
 		for (rt = rcu_dereference(rt_hash_table[h].chain), idx = 0; rt;
 		     rt = rcu_dereference(rt->u.dst.rt_next), idx++) {
@@ -2945,7 +2906,6 @@ int ip_rt_dump(struct sk_buff *skb,  struct netlink_callback *cb)
 			dst_release(xchg(&skb->dst, NULL));
 		}
 		rcu_read_unlock_bh();
-		s_idx = 0;
 	}
 
 done:
@@ -3190,14 +3150,18 @@ static int ip_rt_acct_read(char *buffer, char **start, off_t offset,
 	offset /= sizeof(u32);
 
 	if (length > 0) {
+		u32 *src = ((u32 *) IP_RT_ACCT_CPU(0)) + offset;
 		u32 *dst = (u32 *) buffer;
 
+		/* Copy first cpu. */
 		*start = buffer;
-		memset(dst, 0, length);
+		memcpy(dst, src, length);
 
+		/* Add the other cpus in, one int at a time */
 		for_each_possible_cpu(i) {
 			unsigned int j;
-			u32 *src = ((u32 *) IP_RT_ACCT_CPU(i)) + offset;
+
+			src = ((u32 *) IP_RT_ACCT_CPU(i)) + offset;
 
 			for (j = 0; j < length/4; j++)
 				dst[j] += src[j];
@@ -3300,11 +3264,6 @@ int __init ip_rt_init(void)
 	xfrm4_init();
 #endif
 	rtnl_register(PF_INET, RTM_GETROUTE, inet_rtm_getroute, NULL);
-
-#ifdef CONFIG_MV_ETH_NFP
-	fp_rule_db_init(rt_hash_mask + 1);
-	fp_arp_db_init(rt_hash_mask + 1);	
-#endif /* CONFIG_MV_ETH_NFP */
 
 	return rc;
 }

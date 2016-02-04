@@ -95,7 +95,7 @@ static ssize_t timerfd_read(struct file *file, char __user *buf, size_t count,
 {
 	struct timerfd_ctx *ctx = file->private_data;
 	ssize_t res;
-	u64 ticks = 0;
+	u32 ticks = 0;
 	DECLARE_WAITQUEUE(wait, current);
 
 	if (count < sizeof(ticks))
@@ -130,7 +130,7 @@ static ssize_t timerfd_read(struct file *file, char __user *buf, size_t count,
 			 * callback to avoid DoS attacks specifying a very
 			 * short timer period.
 			 */
-			ticks = (u64)
+			ticks = (u32)
 				hrtimer_forward(&ctx->tmr,
 						hrtimer_cb_get_time(&ctx->tmr),
 						ctx->tintv);
@@ -140,7 +140,7 @@ static ssize_t timerfd_read(struct file *file, char __user *buf, size_t count,
 	}
 	spin_unlock_irq(&ctx->wqh.lock);
 	if (ticks)
-		res = put_user(ticks, (u64 __user *) buf) ? -EFAULT: sizeof(ticks);
+		res = put_user(ticks, buf) ? -EFAULT: sizeof(ticks);
 	return res;
 }
 

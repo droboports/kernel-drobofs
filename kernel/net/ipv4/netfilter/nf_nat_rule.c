@@ -147,6 +147,7 @@ static int ipt_snat_checkentry(const char *tablename,
 			       unsigned int hook_mask)
 {
 	struct nf_nat_multi_range_compat *mr = targinfo;
+
 	/* Must be a valid range */
 	if (mr->rangesize != 1) {
 		printk("SNAT: multiple ranges no longer supported\n");
@@ -162,6 +163,7 @@ static int ipt_dnat_checkentry(const char *tablename,
 			       unsigned int hook_mask)
 {
 	struct nf_nat_multi_range_compat *mr = targinfo;
+
 	/* Must be a valid range */
 	if (mr->rangesize != 1) {
 		printk("DNAT: multiple ranges no longer supported\n");

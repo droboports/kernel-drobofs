@@ -384,15 +384,9 @@ static int tt_no_collision (
 
 					mask = le32_to_cpu (here.qh->hw_info2);
 					/* "knows" no gap is needed */
-					/*mask |= mask >> 8; Dima*/
-					mask = (mask & 0xFF) | ((mask >> 8) & 0xFF);
-					uf_mask = (uf_mask & 0xFF) | ((uf_mask >> 8) & 0xFF);
-
+					mask |= mask >> 8;
 					if (mask & uf_mask)
-					{					
-						ehci_dbg(ehci, "ERROR Q_TYPE_QH: mask=0x%x, uf_mask=0x%x\n", mask, uf_mask);
 						break;
-					}
 				}
 				type = Q_NEXT_TYPE (here.qh->hw_next);
 				here = here.qh->qh_next;
@@ -404,9 +398,7 @@ static int tt_no_collision (
 					mask = le32_to_cpu (here.sitd
 								->hw_uframe);
 					/* FIXME assumes no gap for IN! */
-					/*mask |= mask >> 8;*/
-					mask = (mask & 0xFF) | ((mask >> 8) & 0xFF);
-					uf_mask = (uf_mask & 0xFF) | ((uf_mask >> 8) & 0xFF);
+					mask |= mask >> 8;
 					if (mask & uf_mask)
 						break;
 				}
@@ -415,7 +407,7 @@ static int tt_no_collision (
 				continue;
 			// case Q_TYPE_FSTN:
 			default:
-				ehci_err (ehci,
+				ehci_dbg (ehci,
 					"periodic frame %d bogus type %d\n",
 					frame, type);
 			}
@@ -738,7 +730,7 @@ static int qh_schedule (struct ehci_hcd *ehci, struct ehci_qh *qh)
 {
 	int		status;
 	unsigned	uframe;
-	__le32		c_mask, s_mask = 0;
+	__le32		c_mask;
 	unsigned	frame;		/* 0..(qh->period - 1), or NO_FRAME */
 
 	qh_refresh(ehci, qh);
@@ -773,19 +765,10 @@ static int qh_schedule (struct ehci_hcd *ehci, struct ehci_qh *qh)
 				}
 			} while (status && frame--);
 
-			s_mask = (1 << uframe);
-
 		/* qh->period == 0 means every uframe */
 		} else {
-			uframe = 0;
-			frame = 0;			
+			frame = 0;
 			status = check_intr_schedule (ehci, 0, 0, qh, &c_mask);
-
-			/* set s_mask */
-			while(uframe < 8) {
-				s_mask |= (1 << uframe);
-				uframe += qh->u_period;
-			}	
 		}
 		if (status)
 			goto done;
@@ -793,7 +776,9 @@ static int qh_schedule (struct ehci_hcd *ehci, struct ehci_qh *qh)
 
 		/* reset S-frame and (maybe) C-frame masks */
 		qh->hw_info2 &= __constant_cpu_to_le32(~(QH_CMASK | QH_SMASK));
-		qh->hw_info2 |= cpu_to_le32 (s_mask);
+		qh->hw_info2 |= qh->period
+			? cpu_to_le32 (1 << uframe)
+			: __constant_cpu_to_le32 (QH_SMASK);
 		qh->hw_info2 |= c_mask;
 	} else
 		ehci_dbg (ehci, "reused qh %p schedule\n", qh);
@@ -832,8 +817,6 @@ static int intr_submit (
 	INIT_LIST_HEAD (&empty);
 	qh = qh_append_tds (ehci, urb, &empty, epnum, &ep->hcpriv);
 	if (qh == NULL) {
-		ehci_err (ehci, "intr_submit: qh_append_tds failed: urb=%p, length=%d\n",
-				urb, urb->transfer_buffer_length);
 		status = -ENOMEM;
 		goto done;
 	}
@@ -924,7 +907,7 @@ iso_stream_init (
 		 */
 		stream->usecs = HS_USECS_ISO (maxp);
 		bandwidth = stream->usecs * 8;
-		bandwidth /= interval;
+		bandwidth /= 1 << (interval - 1);
 
 	} else {
 		u32		addr;
@@ -953,12 +936,11 @@ iso_stream_init (
 
 			/* c-mask as specified in USB 2.0 11.18.4 3.c */
 			tmp = (1 << (hs_transfers + 2)) - 1;
-			/*stream->raw_mask |= tmp << (8 + 2);*/
-			stream->raw_mask |= ( ((1 << (tmp + 1)) - 1) << (9 + 1));
+			stream->raw_mask |= tmp << (8 + 2);
 		} else
 			stream->raw_mask = smask_out [hs_transfers - 1];
 		bandwidth = stream->usecs + stream->c_usecs;
-		bandwidth /= interval;
+		bandwidth /= 1 << (interval + 2);
 
 		/* stream->splits gets created from raw_mask later */
 		stream->address = cpu_to_le32 (addr);
@@ -1177,7 +1159,7 @@ itd_urb_transaction (
 	/* allocate/init ITDs */
 	spin_lock_irqsave (&ehci->lock, flags);
 	for (i = 0; i < num_itds; i++) {
-		unsigned now = readl (&ehci->regs->frame_index) % (ehci->periodic_size << 3);
+
 		/* free_list.next might be cache-hot ... but maybe
 		 * the HC caches it too. avoid that issue for now.
 		 */
@@ -1186,15 +1168,8 @@ itd_urb_transaction (
 		if (likely (!list_empty(&stream->free_list))) {
 			itd = list_entry (stream->free_list.prev,
 					 struct ehci_itd, itd_list);
-			if( (now >> 3) == itd->frame)
-			{
-				itd = NULL;
-			}
-			else
-			{			
-				list_del (&itd->itd_list);
-				itd_dma = itd->itd_dma;
-			}
+			list_del (&itd->itd_list);
+			itd_dma = itd->itd_dma;
 		} else
 			itd = NULL;
 
@@ -1262,10 +1237,9 @@ sitd_slot_ok (
 	mask = stream->raw_mask << (uframe & 7);
 
 	/* for IN, don't wrap CSPLIT into the next frame */
-	if (mask & ~0xffff) {
-		ehci_dbg(ehci, "ERROR sitd_slot_ok: mask=0x%x OUT of range\n", mask);
+	if (mask & ~0xffff)
 		return 0;
-	}
+
 	/* this multi-pass logic is simple, but performance may
 	 * suffer when the schedule data isn't cached.
 	 */
@@ -1290,22 +1264,15 @@ sitd_slot_ok (
 		 * assume scheduling slop leaves 10+% for control/bulk.
 		 */
 		if (!tt_no_collision (ehci, period_uframes << 3,
-				stream->udev, frame, mask)) {		
-			ehci_dbg(ehci, "ERROR tt_collision: uf=%d, frame=%d, mask=0x%x\n",
-					 					uf, frame, mask);
-
+				stream->udev, frame, mask))
 			return 0;
-		}
 #endif
 
 		/* check starts (OUT uses more than one) */
 		max_used = 100 - stream->usecs;
 		for (tmp = stream->raw_mask & 0xff; tmp; tmp >>= 1, uf++) {
-			if (periodic_usecs (ehci, frame, uf) > max_used) {
-				ehci_err(ehci, "ERROR SSplit: frame=%d, uf=%d, max_used=%d\n",
-									frame, uf, max_used);		
+			if (periodic_usecs (ehci, frame, uf) > max_used)
 				return 0;
-			}
 		}
 
 		/* for IN, check CSPLIT */
@@ -1318,11 +1285,8 @@ sitd_slot_ok (
 				if ((stream->raw_mask & tmp) == 0)
 					continue;
 				if (periodic_usecs (ehci, frame, uf)
-						> max_used) {				
-					ehci_err(ehci, "ERROR CSplit: frame=%d, uf=%d, max_used=%d\n",
-									frame, uf, max_used);
+						> max_used)
 					return 0;
-				}
 			} while (++uf < 8);
 		}
 
@@ -1354,19 +1318,19 @@ iso_stream_schedule (
 	struct ehci_iso_stream	*stream
 )
 {
-	u32         now, start=0, max, period, prev=0;
+	u32			now, start, max, period;
 	int			status;
 	unsigned		mod = ehci->periodic_size << 3;
 	struct ehci_iso_sched	*sched = urb->hcpriv;
 
 	if (sched->span > (mod - 8 * SCHEDULE_SLOP)) {
-		ehci_err (ehci, "iso request %p too long: span=%d\n", urb, sched->span);
+		ehci_dbg (ehci, "iso request %p too long\n", urb);
 		status = -EFBIG;
 		goto fail;
 	}
 
 	if ((stream->depth + sched->span) > mod) {
-		ehci_err (ehci, "request %p would overflow (%d+%d>%d)\n",
+		ehci_dbg (ehci, "request %p would overflow (%d+%d>%d)\n",
 			urb, stream->depth, sched->span, mod);
 		status = -EFBIG;
 		goto fail;
@@ -1380,26 +1344,17 @@ iso_stream_schedule (
 	/* typical case: reuse current schedule. stream is still active,
 	 * and no gaps from host falling behind (irq delays etc)
 	 */
-	if (stream->next_uframe != -1) {
-
+	if (likely (!list_empty (&stream->td_list))) {
 		start = stream->next_uframe;
-
-		if (likely (!list_empty (&stream->td_list))) {
-				/* There are other waiting transactions */
-				goto ready;
-			}
-		if(start < sched->span)  {
-		  prev = mod - (sched->span - start);
-		  if( (now < start) || (now >= prev) )
-			  goto ready;
-		}
-		else  {
-			prev = start - sched->span;
-			if( (now < start) && (now >= prev) )
-				goto ready;
-		}
-		ehci_dbg(ehci, "iso_sched missed: start=%d, prev=%d, now=%d\n", start, prev, now);			
+		if (start < now)
+			start += mod;
+		if (likely ((start + sched->span) < max))
+			goto ready;
+		/* else fell behind; someday, try to reschedule */
+		status = -EL2NSYNC;
+		goto fail;
 	}
+
 	/* need to schedule; when's the next (u)frame we could start?
 	 * this is bigger than ehci->i_thresh allows; scheduling itself
 	 * isn't free, the slop should handle reasonably slow cpus.  it
@@ -1445,7 +1400,6 @@ iso_stream_schedule (
 	status = -ENOSPC;
 
 fail:
-	ehci_err(ehci, "iso_stream_schedule FAILED: status=%d\n", status);
 	iso_sched_free (stream, sched);
 	urb->hcpriv = NULL;
 	return status;
@@ -1696,7 +1650,7 @@ static int itd_submit (struct ehci_hcd *ehci, struct urb *urb,
 		return -ENOMEM;
 	}
 	if (unlikely (urb->interval != stream->interval)) {
-		ehci_err (ehci, "can't change iso interval %d --> %d\n",
+		ehci_dbg (ehci, "can't change iso interval %d --> %d\n",
 			stream->interval, urb->interval);
 		goto done;
 	}
@@ -1715,7 +1669,7 @@ static int itd_submit (struct ehci_hcd *ehci, struct urb *urb,
 	/* allocate ITDs w/o locking anything */
 	status = itd_urb_transaction (stream, ehci, urb, mem_flags);
 	if (unlikely (status < 0)) {
-		ehci_err (ehci, "can't init itds\n");
+		ehci_dbg (ehci, "can't init itds\n");
 		goto done;
 	}
 
@@ -1728,8 +1682,6 @@ static int itd_submit (struct ehci_hcd *ehci, struct urb *urb,
 		status = iso_stream_schedule (ehci, urb, stream);
 	if (likely (status == 0))
 		itd_link_urb (ehci, urb, ehci->periodic_size << 3, stream);
-	else
-		ehci_err (ehci, "iso_stream_schedule Failed: status=%d\n", status);        
 	spin_unlock_irqrestore (&ehci->lock, flags);
 
 done:
@@ -1758,7 +1710,7 @@ sitd_sched_init (
 	dma_addr_t	dma = urb->transfer_dma;
 
 	/* how many frames are needed for these transfers */
-	iso_sched->span = urb->number_of_packets * (stream->interval << 3);
+	iso_sched->span = urb->number_of_packets * stream->interval;
 
 	/* figure out per-frame sitd fields that we'll need later
 	 * when we fit new sitds into the schedule.
@@ -2057,11 +2009,11 @@ static int sitd_submit (struct ehci_hcd *ehci, struct urb *urb,
 	/* Get iso_stream head */
 	stream = iso_stream_find (ehci, urb);
 	if (stream == NULL) {
-		ehci_err (ehci, "sitd_submit: can't get iso stream\n");
+		ehci_dbg (ehci, "can't get iso stream\n");
 		return -ENOMEM;
 	}
 	if (urb->interval != stream->interval) {
-		ehci_err (ehci, "sitd_submit: can't change iso interval %d --> %d\n",
+		ehci_dbg (ehci, "can't change iso interval %d --> %d\n",
 			stream->interval, urb->interval);
 		goto done;
 	}
@@ -2078,7 +2030,7 @@ static int sitd_submit (struct ehci_hcd *ehci, struct urb *urb,
 	/* allocate SITDs */
 	status = sitd_urb_transaction (stream, ehci, urb, mem_flags);
 	if (status < 0) {
-		ehci_err (ehci, "sitd_submit: can't init sitds\n");
+		ehci_dbg (ehci, "can't init sitds\n");
 		goto done;
 	}
 
@@ -2091,8 +2043,6 @@ static int sitd_submit (struct ehci_hcd *ehci, struct urb *urb,
 		status = iso_stream_schedule (ehci, urb, stream);
 	if (status == 0)
 		sitd_link_urb (ehci, urb, ehci->periodic_size << 3, stream);
-	else
-		ehci_err (ehci, "sitd_submit: can't schedule\n");
 	spin_unlock_irqrestore (&ehci->lock, flags);
 
 done:
@@ -2236,7 +2186,7 @@ restart:
 				q = *q_p;
 				break;
 			default:
-				ehci_err (ehci, "corrupt type %d frame %d shadow %p",
+				dbg ("corrupt type %d frame %d shadow %p",
 					type, frame, q.ptr);
 				// BUG ();
 				q.ptr = NULL;

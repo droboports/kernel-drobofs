@@ -140,8 +140,7 @@ struct dx_frame
 struct dx_map_entry
 {
 	u32 hash;
-	u16 offs;
-	u16 size;
+	u32 offs;
 };
 
 #ifdef CONFIG_EXT4_INDEX
@@ -380,28 +379,13 @@ dx_probe(struct dentry *dentry, struct inode *dir,
 
 	entries = (struct dx_entry *) (((char *)&root->info) +
 				       root->info.info_length);
-
-	if (dx_get_limit(entries) != dx_root_limit(dir,
-						   root->info.info_length)) {
-		ext4_warning(dir->i_sb, __FUNCTION__,
-			     "dx entry: limit != root limit");
-		brelse(bh);
-		*err = ERR_BAD_DX_DIR;
-		goto fail;
-	}
-
+	assert(dx_get_limit(entries) == dx_root_limit(dir,
+						      root->info.info_length));
 	dxtrace (printk("Look up %x", hash));
 	while (1)
 	{
 		count = dx_get_count(entries);
-		if (!count || count > dx_get_limit(entries)) {
-			ext4_warning(dir->i_sb, __FUNCTION__,
-				     "dx entry: no count or count > limit");
-			brelse(bh);
-			*err = ERR_BAD_DX_DIR;
-			goto fail2;
-		}
-
+		assert (count && count <= dx_get_limit(entries));
 		p = entries + 1;
 		q = entries + count - 1;
 		while (p <= q)
@@ -439,15 +423,8 @@ dx_probe(struct dentry *dentry, struct inode *dir,
 		if (!(bh = ext4_bread (NULL,dir, dx_get_block(at), 0, err)))
 			goto fail2;
 		at = entries = ((struct dx_node *) bh->b_data)->entries;
-		if (dx_get_limit(entries) != dx_node_limit (dir)) {
-			ext4_warning(dir->i_sb, __FUNCTION__,
-				     "dx entry: limit != node limit");
-			brelse(bh);
-			*err = ERR_BAD_DX_DIR;
-			goto fail2;
-		}
+		assert (dx_get_limit(entries) == dx_node_limit (dir));
 		frame++;
-		frame->bh = NULL;
 	}
 fail2:
 	while (frame >= frame_in) {
@@ -455,10 +432,6 @@ fail2:
 		frame--;
 	}
 fail:
-	if (*err == ERR_BAD_DX_DIR)
-		ext4_warning(dir->i_sb, __FUNCTION__,
-			     "Corrupt dir inode %ld, running e2fsck is "
-			     "recommended.", dir->i_ino);
 	return NULL;
 }
 
@@ -698,10 +671,6 @@ errout:
  * Directory block splitting, compacting
  */
 
-/*
- * Create map of hash values, offsets, and sizes, stored at end of block.
- * Returns number of entries mapped.
- */
 static int dx_make_map (struct ext4_dir_entry_2 *de, int size,
 			struct dx_hash_info *hinfo, struct dx_map_entry *map_tail)
 {
@@ -715,8 +684,7 @@ static int dx_make_map (struct ext4_dir_entry_2 *de, int size,
 			ext4fs_dirhash(de->name, de->name_len, &h);
 			map_tail--;
 			map_tail->hash = h.hash;
-			map_tail->offs = (u16) ((char *) de - base);
-			map_tail->size = le16_to_cpu(de->rec_len);
+			map_tail->offs = (u32) ((char *) de - base);
 			count++;
 			cond_resched();
 		}
@@ -726,7 +694,6 @@ static int dx_make_map (struct ext4_dir_entry_2 *de, int size,
 	return count;
 }
 
-/* Sort map by hash value */
 static void dx_sort_map (struct dx_map_entry *map, unsigned count)
 {
 	struct dx_map_entry *p, *q, *top = map + count - 1;
@@ -1112,10 +1079,6 @@ static inline void ext4_set_de_type(struct super_block *sb,
 }
 
 #ifdef CONFIG_EXT4_INDEX
-/*
- * Move count entries from end of map between two memory locations.
- * Returns pointer to last entry moved.
- */
 static struct ext4_dir_entry_2 *
 dx_move_dirents(char *from, char *to, struct dx_map_entry *map, int count)
 {
@@ -1134,10 +1097,6 @@ dx_move_dirents(char *from, char *to, struct dx_map_entry *map, int count)
 	return (struct ext4_dir_entry_2 *) (to - rec_len);
 }
 
-/*
- * Compact each dir entry in the range to the minimal rec_len.
- * Returns pointer to last entry in range.
- */
 static struct ext4_dir_entry_2* dx_pack_dirents(char *base, int size)
 {
 	struct ext4_dir_entry_2 *next, *to, *prev, *de = (struct ext4_dir_entry_2 *) base;
@@ -1160,11 +1119,6 @@ static struct ext4_dir_entry_2* dx_pack_dirents(char *base, int size)
 	return prev;
 }
 
-/*
- * Split a full leaf block to make room for a new dir entry.
- * Allocate a new block, and move entries so that they are approx. equally full.
- * Returns pointer to de in block into which the new entry will be inserted.
- */
 static struct ext4_dir_entry_2 *do_split(handle_t *handle, struct inode *dir,
 			struct buffer_head **bh,struct dx_frame *frame,
 			struct dx_hash_info *hinfo, int *error)
@@ -1176,7 +1130,7 @@ static struct ext4_dir_entry_2 *do_split(handle_t *handle, struct inode *dir,
 	u32 hash2;
 	struct dx_map_entry *map;
 	char *data1 = (*bh)->b_data, *data2;
-	unsigned split, move, size, i;
+	unsigned split;
 	struct ext4_dir_entry_2 *de = NULL, *de2;
 	int	err = 0;
 
@@ -1204,19 +1158,8 @@ static struct ext4_dir_entry_2 *do_split(handle_t *handle, struct inode *dir,
 	count = dx_make_map ((struct ext4_dir_entry_2 *) data1,
 			     blocksize, hinfo, map);
 	map -= count;
+	split = count/2; // need to adjust to actual middle
 	dx_sort_map (map, count);
-	/* Split the existing block in the middle, size-wise */
-	size = 0;
-	move = 0;
-	for (i = count-1; i >= 0; i--) {
-		/* is more than half of this entry in 2nd half of the block? */
-		if (size + map[i].size/2 > blocksize/2)
-			break;
-		size += map[i].size;
-		move++;
-	}
-	/* map index at which we will split */
-	split = count - move;
 	hash2 = map[split].hash;
 	continued = hash2 == map[split - 1].hash;
 	dxtrace(printk("Split block %i at %x, %i/%i\n",

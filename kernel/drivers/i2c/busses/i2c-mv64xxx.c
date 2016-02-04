@@ -1,6 +1,6 @@
 /*
- * Driver for the i2c controller on the Marvell line of host bridges
- * (e.g, gt642[46]0, mv643[46]0, mv644[46]0, and Orion SoC family).
+ * Driver for the i2c controller on the Marvell line of host bridges for MIPS
+ * and PPC (e.g, gt642[46]0, mv643[46]0, mv644[46]0).
  *
  * Author: Mark A. Greer <mgreer@mvista.com>
  *
@@ -14,7 +14,7 @@
 #include <linux/spinlock.h>
 #include <linux/i2c.h>
 #include <linux/interrupt.h>
-#include <linux/mv643xx_i2c.h>
+#include <linux/mv643xx.h>
 #include <linux/platform_device.h>
 
 #include <asm/io.h>
@@ -86,7 +86,6 @@ struct mv64xxx_i2c_data {
 	u32			cntl_bits;
 	void __iomem		*reg_base;
 	u32			reg_base_p;
-	u32			reg_size;
 	u32			addr1;
 	u32			addr2;
 	u32			bytes_left;
@@ -461,20 +460,17 @@ static int __devinit
 mv64xxx_i2c_map_regs(struct platform_device *pd,
 	struct mv64xxx_i2c_data *drv_data)
 {
-	int size;
-	struct resource	*r = platform_get_resource(pd, IORESOURCE_MEM, 0);
+	struct resource	*r;
 
-	if (!r)
-		return -ENODEV;
+	if ((r = platform_get_resource(pd, IORESOURCE_MEM, 0)) &&
+		request_mem_region(r->start, MV64XXX_I2C_REG_BLOCK_SIZE,
+			drv_data->adapter.name)) {
 
-	size = r->end - r->start + 1;
-
-	if (!request_mem_region(r->start, size, drv_data->adapter.name))
-		return -EBUSY;
-
-	drv_data->reg_base = ioremap(r->start, size);
-	drv_data->reg_base_p = r->start;
-	drv_data->reg_size = size;
+		drv_data->reg_base = ioremap(r->start,
+			MV64XXX_I2C_REG_BLOCK_SIZE);
+		drv_data->reg_base_p = r->start;
+	} else
+		return -ENOMEM;
 
 	return 0;
 }
@@ -484,7 +480,8 @@ mv64xxx_i2c_unmap_regs(struct mv64xxx_i2c_data *drv_data)
 {
 	if (drv_data->reg_base) {
 		iounmap(drv_data->reg_base);
-		release_mem_region(drv_data->reg_base_p, drv_data->reg_size);
+		release_mem_region(drv_data->reg_base_p,
+			MV64XXX_I2C_REG_BLOCK_SIZE);
 	}
 
 	drv_data->reg_base = NULL;

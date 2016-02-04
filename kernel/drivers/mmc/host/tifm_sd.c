@@ -16,7 +16,6 @@
 #include <linux/mmc/host.h>
 #include <linux/highmem.h>
 #include <linux/scatterlist.h>
-#include <linux/log2.h>
 #include <asm/io.h>
 
 #define DRIVER_NAME "tifm_sd"
@@ -192,7 +191,7 @@ static void tifm_sd_transfer_data(struct tifm_sd *host)
 		}
 		off = sg[host->sg_pos].offset + host->block_pos;
 
-		pg = nth_page(sg_page(&sg[host->sg_pos]), off >> PAGE_SHIFT);
+		pg = nth_page(sg[host->sg_pos].page, off >> PAGE_SHIFT);
 		p_off = offset_in_page(off);
 		p_cnt = PAGE_SIZE - p_off;
 		p_cnt = min(p_cnt, cnt);
@@ -241,18 +240,18 @@ static void tifm_sd_bounce_block(struct tifm_sd *host, struct mmc_data *r_data)
 		}
 		off = sg[host->sg_pos].offset + host->block_pos;
 
-		pg = nth_page(sg_page(&sg[host->sg_pos]), off >> PAGE_SHIFT);
+		pg = nth_page(sg[host->sg_pos].page, off >> PAGE_SHIFT);
 		p_off = offset_in_page(off);
 		p_cnt = PAGE_SIZE - p_off;
 		p_cnt = min(p_cnt, cnt);
 		p_cnt = min(p_cnt, t_size);
 
 		if (r_data->flags & MMC_DATA_WRITE)
-			tifm_sd_copy_page(sg_page(&host->bounce_buf),
+			tifm_sd_copy_page(host->bounce_buf.page,
 					  r_data->blksz - t_size,
 					  pg, p_off, p_cnt);
 		else if (r_data->flags & MMC_DATA_READ)
-			tifm_sd_copy_page(pg, p_off, sg_page(&host->bounce_buf),
+			tifm_sd_copy_page(pg, p_off, host->bounce_buf.page,
 					  r_data->blksz - t_size, p_cnt);
 
 		t_size -= p_cnt;
@@ -405,14 +404,14 @@ static void tifm_sd_check_status(struct tifm_sd *host)
 	struct tifm_dev *sock = host->dev;
 	struct mmc_command *cmd = host->req->cmd;
 
-	if (cmd->error)
+	if (cmd->error != MMC_ERR_NONE)
 		goto finish_request;
 
 	if (!(host->cmd_flags & CMD_READY))
 		return;
 
 	if (cmd->data) {
-		if (cmd->data->error) {
+		if (cmd->data->error != MMC_ERR_NONE) {
 			if ((host->cmd_flags & SCMD_ACTIVE)
 			    && !(host->cmd_flags & SCMD_READY))
 				return;
@@ -505,7 +504,7 @@ static void tifm_sd_card_event(struct tifm_dev *sock)
 {
 	struct tifm_sd *host;
 	unsigned int host_status = 0;
-	int cmd_error = 0;
+	int cmd_error = MMC_ERR_NONE;
 	struct mmc_command *cmd = NULL;
 	unsigned long flags;
 
@@ -522,15 +521,15 @@ static void tifm_sd_card_event(struct tifm_dev *sock)
 			writel(host_status & TIFM_MMCSD_ERRMASK,
 			       sock->addr + SOCK_MMCSD_STATUS);
 			if (host_status & TIFM_MMCSD_CTO)
-				cmd_error = -ETIMEDOUT;
+				cmd_error = MMC_ERR_TIMEOUT;
 			else if (host_status & TIFM_MMCSD_CCRC)
-				cmd_error = -EILSEQ;
+				cmd_error = MMC_ERR_BADCRC;
 
 			if (cmd->data) {
 				if (host_status & TIFM_MMCSD_DTO)
-					cmd->data->error = -ETIMEDOUT;
+					cmd->data->error = MMC_ERR_TIMEOUT;
 				else if (host_status & TIFM_MMCSD_DCRC)
-					cmd->data->error = -EILSEQ;
+					cmd->data->error = MMC_ERR_BADCRC;
 			}
 
 			writel(TIFM_FIFO_INT_SETALL,
@@ -627,21 +626,14 @@ static void tifm_sd_request(struct mmc_host *mmc, struct mmc_request *mrq)
 
 	spin_lock_irqsave(&sock->lock, flags);
 	if (host->eject) {
-		mrq->cmd->error = -ENOMEDIUM;
+		spin_unlock_irqrestore(&sock->lock, flags);
 		goto err_out;
 	}
 
 	if (host->req) {
 		printk(KERN_ERR "%s : unfinished request detected\n",
 		       sock->dev.bus_id);
-		mrq->cmd->error = -ETIMEDOUT;
-		goto err_out;
-	}
-
-	if (mrq->data && !is_power_of_2(mrq->data->blksz)) {
-		printk(KERN_ERR "%s: Unsupported block size (%d bytes)\n",
-			sock->dev.bus_id, mrq->data->blksz);
-		mrq->cmd->error = -EINVAL;
+		spin_unlock_irqrestore(&sock->lock, flags);
 		goto err_out;
 	}
 
@@ -730,7 +722,7 @@ static void tifm_sd_request(struct mmc_host *mmc, struct mmc_request *mrq)
 	return;
 
 err_out:
-	spin_unlock_irqrestore(&sock->lock, flags);
+	mrq->cmd->error = MMC_ERR_TIMEOUT;
 	mmc_request_done(mmc, mrq);
 }
 
@@ -1020,9 +1012,9 @@ static void tifm_sd_remove(struct tifm_dev *sock)
 		writel(TIFM_FIFO_INT_SETALL,
 		       sock->addr + SOCK_DMA_FIFO_INT_ENABLE_CLEAR);
 		writel(0, sock->addr + SOCK_DMA_FIFO_INT_ENABLE_SET);
-		host->req->cmd->error = -ENOMEDIUM;
+		host->req->cmd->error = MMC_ERR_TIMEOUT;
 		if (host->req->stop)
-			host->req->stop->error = -ENOMEDIUM;
+			host->req->stop->error = MMC_ERR_TIMEOUT;
 		tasklet_schedule(&host->finish_tasklet);
 	}
 	spin_unlock_irqrestore(&sock->lock, flags);

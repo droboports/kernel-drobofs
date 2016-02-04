@@ -914,8 +914,7 @@ no_in_dev:
 			continue;
 
 		for_primary_ifa(in_dev) {
-			if (!IN_DEV_HIDDEN(in_dev) &&
-			    ifa->ifa_scope != RT_SCOPE_LINK &&
+			if (ifa->ifa_scope != RT_SCOPE_LINK &&
 			    ifa->ifa_scope <= scope) {
 				addr = ifa->ifa_local;
 				goto out_unlock_both;
@@ -1031,7 +1030,7 @@ static void inetdev_changename(struct net_device *dev, struct in_device *in_dev)
 		memcpy(ifa->ifa_label, dev->name, IFNAMSIZ);
 		if (named++ == 0)
 			continue;
-		dot = strchr(old, ':');
+		dot = strchr(ifa->ifa_label, ':');
 		if (dot == NULL) {
 			sprintf(old, ":%d", named);
 			dot = old;
@@ -1195,7 +1194,7 @@ static int inet_dump_ifaddr(struct sk_buff *skb, struct netlink_callback *cb)
 		for (ifa = in_dev->ifa_list, ip_idx = 0; ifa;
 		     ifa = ifa->ifa_next, ip_idx++) {
 			if (ip_idx < s_ip_idx)
-				continue;
+				goto cont;
 			if (inet_fill_ifaddr(skb, ifa, NETLINK_CB(cb->skb).pid,
 					     cb->nlh->nlmsg_seq,
 					     RTM_NEWADDR, NLM_F_MULTI) <= 0)
@@ -1445,7 +1444,6 @@ static struct devinet_sysctl_table {
 		DEVINET_SYSCTL_RW_ENTRY(BOOTP_RELAY, "bootp_relay"),
 		DEVINET_SYSCTL_RW_ENTRY(LOG_MARTIANS, "log_martians"),
 		DEVINET_SYSCTL_RW_ENTRY(TAG, "tag"),
-		DEVINET_SYSCTL_RW_ENTRY(HIDDEN, "hidden"),
 		DEVINET_SYSCTL_RW_ENTRY(ARPFILTER, "arp_filter"),
 		DEVINET_SYSCTL_RW_ENTRY(ARP_ANNOUNCE, "arp_announce"),
 		DEVINET_SYSCTL_RW_ENTRY(ARP_IGNORE, "arp_ignore"),

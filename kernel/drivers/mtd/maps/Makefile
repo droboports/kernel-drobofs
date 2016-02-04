@@ -72,18 +72,3 @@ obj-$(CONFIG_MTD_PLATRAM)	+= plat-ram.o
 obj-$(CONFIG_MTD_OMAP_NOR)	+= omap_nor.o
 obj-$(CONFIG_MTD_MTX1)		+= mtx-1_flash.o
 obj-$(CONFIG_MTD_TQM834x)	+= tqm834x.o
-
-obj-$(CONFIG_MTD)               += flashmap.o
-ifeq ($(CONFIG_ARCH_FEROCEON_ORION),y)
-	include $(TOPDIR)/arch/arm/mach-feroceon-orion/config/mvRules.mk
-	flashmap-objs = ../../../arch/arm/mach-feroceon-orion/flashmap.o
-endif
-ifeq ($(CONFIG_ARCH_FEROCEON_KW),y)
-	include $(TOPDIR)/arch/arm/mach-feroceon-kw/config/mvRules.mk
-	flashmap-objs = ../../../arch/arm/mach-feroceon-kw/flashmap.o
-endif
-ifeq ($(CONFIG_ARCH_FEROCEON_MV78XX0),y)
-	include $(TOPDIR)/arch/arm/mach-feroceon-mv78xx0/config/mvRules.mk
-	flashmap-objs = ../../../arch/arm/mach-feroceon-mv78xx0/flashmap.o
-endif
-

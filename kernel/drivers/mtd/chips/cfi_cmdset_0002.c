@@ -157,115 +157,6 @@ static void fixup_amd_bootblock(struct mtd_info *mtd, void* param)
 }
 #endif
 
-#define DRI_INTERCORE_FLASH_LOCKING 1
-#ifdef DRI_INTERCORE_FLASH_LOCKING
-
-extern unsigned int whoAmI(void);
-
-#define MV_78200_INTER_REGS_BASE	0xF1000000
-/* Always use the Core 0 registers for locking */
-#define MV_78200_HW_SEM_BASE_REG	(0x20500)
-#define MV_78200_HW_SEM0_CPUID_MASK	0x7
-#define MV_78200_HW_SEM_CLEAR_VAL	0xFF
-
-#define MV_78200_READ_HW_SEM0_REG	(*((volatile unsigned int *) (MV_78200_INTER_REGS_BASE + MV_78200_HW_SEM_BASE_REG)) & MV_78200_HW_SEM0_CPUID_MASK)
-
-/* dri_lock_intercore_flash_semaphore		*/
-/*		return 0 if succeeds else returns 1 */
-int dri_lock_intercore_flash_semaphore(void)
-{
-	if(whoAmI() != MV_78200_READ_HW_SEM0_REG)
-	{
-		/* Unable to take the semaphore */
-		return 1;
-	}
-	/* Able to take the semaphore */
-	return 0;
-}
-
-/* dri_unlock_intercore_flash_semaphore		*/
-/*		return 0 if succeeds else returns 1 if this cpu doesn't own it */
-int dri_unlock_intercore_flash_semaphore(void)
-{
-	volatile unsigned int cpu = MV_78200_READ_HW_SEM0_REG;
-	volatile unsigned int *addr =  (volatile unsigned int *) (MV_78200_INTER_REGS_BASE + MV_78200_HW_SEM_BASE_REG);
-	if(whoAmI() == cpu)
-	{
-		*addr = (MV_78200_HW_SEM_CLEAR_VAL);
-		return 0;
-	}
-	/* we do not own the cpu */
-	return 1;
-}
-
-#define DRI_LOCK_WAIT_PRINTF_COUNT 1000UL
-#define DRI_LOCK_TIMEOUT           10000000UL // Measured in microseconds
-#define DRI_LOCK_DELAY_TIME        1000UL     // Measured in microseconds
-
-// We need to make sure we don't unlock if the lock_count > 0
-// This needs to be spin lock protected really
-unsigned long int lock_count = 0;
-
-int dri_lock_flash_till_timeout(void)
-{
-  int ret;
-  // Wrapping is Ok
-  unsigned long int count = 0;
-
-  while (1)
-  {
-    ret = dri_lock_intercore_flash_semaphore();
-    if (ret == 0)
-    {
-      lock_count++;
-      return 0;
-    }
-
-    // Display a periodic console message.
-    if (count && ((count % DRI_LOCK_WAIT_PRINTF_COUNT) == 0))
-    {
-      printk("dri_lock_flash_till_timeout: Unable to get flash lock after %lu iterations\n", count);
-    }
-    
-    // Timed out without getting the lock.
-    if (count >= (DRI_LOCK_TIMEOUT/DRI_LOCK_DELAY_TIME))
-    {
-      printk("dri_lock_flash_till_timeout: Unable to get flash lock before timeout expired\n");
-      return -1;
-    }
-
-    // Failed to get the lock, delay then try again.
-    count++;
-    cfi_udelay(DRI_LOCK_DELAY_TIME);
-  }
-  return -1;
-}
-
-void dri_unlock_flash(void)
-{
-  int ret;
-
-  if (lock_count == 0)
-  {
-    printk("dri_unlock_flash called without any locks being held\n");
-  }
-  else
-  {
-    lock_count--;
-  }
-  
-  if (lock_count > 0)
-    return;
-
-  ret = dri_unlock_intercore_flash_semaphore();
-  if (ret)
-  {
-    printk("dri_unlock_flash: We tried to unlock flash when lock was held by the other core\n");
-  }
-}
-
-#endif
-
 static void fixup_use_write_buffers(struct mtd_info *mtd, void *param)
 {
 	struct map_info *map = mtd->priv;
@@ -366,15 +257,9 @@ struct mtd_info *cfi_cmdset_0002(struct map_info *map, int primary)
 	struct mtd_info *mtd;
 	int i;
 
-	if (0 != dri_lock_flash_till_timeout()) {
-		printk("In Func: %s\n", __func__);
-		return NULL;
-	}
-
 	mtd = kzalloc(sizeof(*mtd), GFP_KERNEL);
 	if (!mtd) {
 		printk(KERN_WARNING "Failed to allocate memory for MTD device\n");
-		dri_unlock_flash();
 		return NULL;
 	}
 	mtd->priv = map;
@@ -404,7 +289,6 @@ struct mtd_info *cfi_cmdset_0002(struct map_info *map, int primary)
 		extp = (struct cfi_pri_amdstd*)cfi_read_pri(map, adr, sizeof(*extp), "Amd/Fujitsu");
 		if (!extp) {
 			kfree(mtd);
-			dri_unlock_flash();
 			return NULL;
 		}
 
@@ -415,7 +299,6 @@ struct mtd_info *cfi_cmdset_0002(struct map_info *map, int primary)
 			       extp->MinorVersion);
 			kfree(extp);
 			kfree(mtd);
-			dri_unlock_flash();
 			return NULL;
 		}
 
@@ -482,7 +365,6 @@ struct mtd_info *cfi_cmdset_0002(struct map_info *map, int primary)
 
 	map->fldrv = &cfi_amdstd_chipdrv;
 
-	dri_unlock_flash();
 	return cfi_amdstd_setup(mtd);
 }
 EXPORT_SYMBOL_GPL(cfi_cmdset_0002);
@@ -494,11 +376,6 @@ static struct mtd_info *cfi_amdstd_setup(struct mtd_info *mtd)
 	unsigned long devsize = (1<<cfi->cfiq->DevSize) * cfi->interleave;
 	unsigned long offset = 0;
 	int i,j;
-
-	if (0 != dri_lock_flash_till_timeout()) {
-		printk("In Func: %s\n", __func__);
-		return NULL;
-	}
 
 	printk(KERN_NOTICE "number of %s chips: %d\n",
 	       (cfi->cfi_mode == CFI_MODE_CFI)?"CFI":"JEDEC",cfi->numchips);
@@ -548,7 +425,6 @@ static struct mtd_info *cfi_amdstd_setup(struct mtd_info *mtd)
 	printk(KERN_NOTICE "cfi_cmdset_0002: Disabling erase-suspend-program due to code brokenness.\n");
 
 	__module_get(THIS_MODULE);
-	dri_unlock_flash();
 	return mtd;
 
  setup_err:
@@ -558,7 +434,6 @@ static struct mtd_info *cfi_amdstd_setup(struct mtd_info *mtd)
 	}
 	kfree(cfi->cmdset_priv);
 	kfree(cfi->cfiq);
-	dri_unlock_flash();
 	return NULL;
 }
 
@@ -577,15 +452,9 @@ static int __xipram chip_ready(struct map_info *map, unsigned long addr)
 {
 	map_word d, t;
 
-	if (0 != dri_lock_flash_till_timeout()) {
-		printk("In Func: %s\n", __func__);
-		printk("chip_ready: Continuing even though we didn't get the flash lock\n");
-	}
-
 	d = map_read(map, addr);
 	t = map_read(map, addr);
 
-	dri_unlock_flash();
 	return map_word_equal(map, d, t);
 }
 
@@ -608,15 +477,8 @@ static int __xipram chip_good(struct map_info *map, unsigned long addr, map_word
 {
 	map_word oldd, curd;
 
-	if (0 != dri_lock_flash_till_timeout()) {
-		printk("In Func: %s\n", __func__);
-		printk("chip_good: Continuing even though we didn't get the flash lock\n");
-	}
-
 	oldd = map_read(map, addr);
 	curd = map_read(map, addr);
-
-	dri_unlock_flash();
 
 	return	map_word_equal(map, oldd, curd) &&
 		map_word_equal(map, curd, expected);
@@ -628,11 +490,6 @@ static int get_chip(struct map_info *map, struct flchip *chip, unsigned long adr
 	struct cfi_private *cfi = map->fldrv_priv;
 	unsigned long timeo;
 	struct cfi_pri_amdstd *cfip = (struct cfi_pri_amdstd *)cfi->cmdset_priv;
-
-	if (0 != dri_lock_flash_till_timeout()) {
-	  printk("In Func: %s\n", __func__);
-	  return -EIO;
-	}
 
  resettime:
 	timeo = jiffies + HZ;
@@ -647,7 +504,6 @@ static int get_chip(struct map_info *map, struct flchip *chip, unsigned long adr
 			if (time_after(jiffies, timeo)) {
 				printk(KERN_ERR "Waiting for chip to be ready timed out.\n");
 				spin_unlock(chip->mutex);
-				dri_unlock_flash();
 				return -EIO;
 			}
 			spin_unlock(chip->mutex);
@@ -660,7 +516,6 @@ static int get_chip(struct map_info *map, struct flchip *chip, unsigned long adr
 	case FL_READY:
 	case FL_CFI_QUERY:
 	case FL_JEDEC_QUERY:
-		dri_unlock_flash();
 		return 0;
 
 	case FL_ERASING:
@@ -700,7 +555,6 @@ static int get_chip(struct map_info *map, struct flchip *chip, unsigned long adr
 				chip->state = FL_ERASING;
 				chip->oldstate = FL_READY;
 				printk(KERN_ERR "MTD %s(): chip not ready after erase suspend\n", __func__);
-				dri_unlock_flash();
 				return -EIO;
 			}
 
@@ -711,7 +565,6 @@ static int get_chip(struct map_info *map, struct flchip *chip, unsigned long adr
 			   So we can just loop here. */
 		}
 		chip->state = FL_READY;
-		dri_unlock_flash();
 		return 0;
 
 	case FL_XIP_WHILE_ERASING:
@@ -720,15 +573,12 @@ static int get_chip(struct map_info *map, struct flchip *chip, unsigned long adr
 			goto sleep;
 		chip->oldstate = chip->state;
 		chip->state = FL_READY;
-		dri_unlock_flash();
 		return 0;
 
 	case FL_POINT:
 		/* Only if there's no operation suspended... */
-		if (mode == FL_READY && chip->oldstate == FL_READY) {
-			dri_unlock_flash();
+		if (mode == FL_READY && chip->oldstate == FL_READY)
 			return 0;
-		}
 
 	default:
 	sleep:
@@ -746,11 +596,6 @@ static int get_chip(struct map_info *map, struct flchip *chip, unsigned long adr
 static void put_chip(struct map_info *map, struct flchip *chip, unsigned long adr)
 {
 	struct cfi_private *cfi = map->fldrv_priv;
-
-	if (0 != dri_lock_flash_till_timeout()) {
-		printk("In Func: %s\n", __func__);
-		printk("put_chip: Continuing even though we didn't get the flash lock\n");
-	}
 
 	switch(chip->oldstate) {
 	case FL_ERASING:
@@ -774,7 +619,6 @@ static void put_chip(struct map_info *map, struct flchip *chip, unsigned long ad
 		printk(KERN_ERR "MTD: put_chip() called with oldstate %d!!\n", chip->oldstate);
 	}
 	wake_up(&chip->wq);
-	dri_unlock_flash();
 }
 
 #ifdef CONFIG_MTD_XIP
@@ -976,11 +820,6 @@ static inline int do_read_onechip(struct map_info *map, struct flchip *chip, lof
 	struct cfi_private *cfi = map->fldrv_priv;
 	int ret;
 
-	if (0 != dri_lock_flash_till_timeout()) {
-		printk("In Func: %s\n", __func__);
-		return -EIO;
-	}
-
 	adr += chip->start;
 
 	/* Ensure cmd read/writes are aligned. */
@@ -990,7 +829,6 @@ static inline int do_read_onechip(struct map_info *map, struct flchip *chip, lof
 	ret = get_chip(map, chip, cmd_addr, FL_READY);
 	if (ret) {
 		spin_unlock(chip->mutex);
-		dri_unlock_flash();
 		return ret;
 	}
 
@@ -1004,7 +842,6 @@ static inline int do_read_onechip(struct map_info *map, struct flchip *chip, lof
 	put_chip(map, chip, cmd_addr);
 
 	spin_unlock(chip->mutex);
-	dri_unlock_flash();
 	return 0;
 }
 
@@ -1017,10 +854,6 @@ static int cfi_amdstd_read (struct mtd_info *mtd, loff_t from, size_t len, size_
 	int chipnum;
 	int ret = 0;
 
-	if (0 != dri_lock_flash_till_timeout()) {
-		printk("In Func: %s\n", __func__);
-		return -EIO;
-	}
 	/* ofs: offset within the first chip that the first read should start */
 
 	chipnum = (from >> cfi->chipshift);
@@ -1051,7 +884,6 @@ static int cfi_amdstd_read (struct mtd_info *mtd, loff_t from, size_t len, size_
 		ofs = 0;
 		chipnum++;
 	}
-	dri_unlock_flash();
 	return ret;
 }
 
@@ -1061,11 +893,6 @@ static inline int do_read_secsi_onechip(struct map_info *map, struct flchip *chi
 	DECLARE_WAITQUEUE(wait, current);
 	unsigned long timeo = jiffies + HZ;
 	struct cfi_private *cfi = map->fldrv_priv;
-
-	if (0 != dri_lock_flash_till_timeout()) {
-		printk("In Func: %s\n", __func__);
-		return -EIO;
-	}
 
  retry:
 	spin_lock(chip->mutex);
@@ -1082,10 +909,8 @@ static inline int do_read_secsi_onechip(struct map_info *map, struct flchip *chi
 		schedule();
 		remove_wait_queue(&chip->wq, &wait);
 #if 0
-		if(signal_pending(current)) {
-			dri_unlock_flash();
+		if(signal_pending(current))
 			return -EINTR;
-		}
 #endif
 		timeo = jiffies + HZ;
 
@@ -1110,8 +935,6 @@ static inline int do_read_secsi_onechip(struct map_info *map, struct flchip *chi
 	wake_up(&chip->wq);
 	spin_unlock(chip->mutex);
 
-	dri_unlock_flash();
-
 	return 0;
 }
 
@@ -1123,10 +946,6 @@ static int cfi_amdstd_secsi_read (struct mtd_info *mtd, loff_t from, size_t len,
 	int chipnum;
 	int ret = 0;
 
-	if (0 != dri_lock_flash_till_timeout()) {
-		printk("In Func: %s\n", __func__);
-		return -EIO;
-	}
 
 	/* ofs: offset within the first chip that the first read should start */
 
@@ -1159,9 +978,6 @@ static int cfi_amdstd_secsi_read (struct mtd_info *mtd, loff_t from, size_t len,
 		ofs = 0;
 		chipnum++;
 	}
-
-	dri_unlock_flash();
-
 	return ret;
 }
 
@@ -1170,12 +986,6 @@ static int __xipram do_write_oneword(struct map_info *map, struct flchip *chip, 
 {
 	struct cfi_private *cfi = map->fldrv_priv;
 	unsigned long timeo = jiffies + HZ;
-
-	if (0 != dri_lock_flash_till_timeout()) {
-		printk("In Func: %s\n", __func__);
-		return -EIO;
-	}
-
 	/*
 	 * We use a 1ms + 1 jiffies generic timeout for writes (most devices
 	 * have a max write time of a few hundreds usec). However, we should
@@ -1196,7 +1006,6 @@ static int __xipram do_write_oneword(struct map_info *map, struct flchip *chip, 
 	ret = get_chip(map, chip, adr, FL_WRITING);
 	if (ret) {
 		spin_unlock(chip->mutex);
-		dri_unlock_flash();
 		return ret;
 	}
 
@@ -1277,7 +1086,6 @@ static int __xipram do_write_oneword(struct map_info *map, struct flchip *chip, 
 	put_chip(map, chip, adr);
 	spin_unlock(chip->mutex);
 
-	dri_unlock_flash();
 	return ret;
 }
 
@@ -1292,16 +1100,9 @@ static int cfi_amdstd_write_words(struct mtd_info *mtd, loff_t to, size_t len,
 	unsigned long ofs, chipstart;
 	DECLARE_WAITQUEUE(wait, current);
 
-	if (0 != dri_lock_flash_till_timeout()) {
-		printk("In Func: %s\n", __func__);
-		return -EIO;
-	}
-
 	*retlen = 0;
-	if (!len) {
-		dri_unlock_flash();
+	if (!len)
 		return 0;
-	}
 
 	chipnum = to >> cfi->chipshift;
 	ofs = to  - (chipnum << cfi->chipshift);
@@ -1329,10 +1130,8 @@ static int cfi_amdstd_write_words(struct mtd_info *mtd, loff_t to, size_t len,
 			schedule();
 			remove_wait_queue(&cfi->chips[chipnum].wq, &wait);
 #if 0
-			if(signal_pending(current)) {
-				dri_unlock_flash();
+			if(signal_pending(current))
 				return -EINTR;
-			}
 #endif
 			goto retry;
 		}
@@ -1349,10 +1148,8 @@ static int cfi_amdstd_write_words(struct mtd_info *mtd, loff_t to, size_t len,
 
 		ret = do_write_oneword(map, &cfi->chips[chipnum],
 				       bus_ofs, tmp_buf);
-		if (ret) {
-			dri_unlock_flash();
+		if (ret)
 			return ret;
-		}
 
 		ofs += n;
 		buf += n;
@@ -1362,10 +1159,8 @@ static int cfi_amdstd_write_words(struct mtd_info *mtd, loff_t to, size_t len,
 		if (ofs >> cfi->chipshift) {
 			chipnum ++;
 			ofs = 0;
-			if (chipnum == cfi->numchips) {
-				dri_unlock_flash();
+			if (chipnum == cfi->numchips)
 				return 0;
-			}
 		}
 	}
 
@@ -1377,10 +1172,8 @@ static int cfi_amdstd_write_words(struct mtd_info *mtd, loff_t to, size_t len,
 
 		ret = do_write_oneword(map, &cfi->chips[chipnum],
 				       ofs, datum);
-		if (ret) {
-			dri_unlock_flash();
+		if (ret)
 			return ret;
-		}
 
 		ofs += map_bankwidth(map);
 		buf += map_bankwidth(map);
@@ -1390,10 +1183,8 @@ static int cfi_amdstd_write_words(struct mtd_info *mtd, loff_t to, size_t len,
 		if (ofs >> cfi->chipshift) {
 			chipnum ++;
 			ofs = 0;
-			if (chipnum == cfi->numchips) {
-				dri_unlock_flash();
+			if (chipnum == cfi->numchips)
 				return 0;
-			}
 			chipstart = cfi->chips[chipnum].start;
 		}
 	}
@@ -1417,10 +1208,8 @@ static int cfi_amdstd_write_words(struct mtd_info *mtd, loff_t to, size_t len,
 			schedule();
 			remove_wait_queue(&cfi->chips[chipnum].wq, &wait);
 #if 0
-			if(signal_pending(current)) {
-				dri_unlock_flash();
+			if(signal_pending(current))
 				return -EINTR;
-			}
 #endif
 			goto retry1;
 		}
@@ -1433,15 +1222,12 @@ static int cfi_amdstd_write_words(struct mtd_info *mtd, loff_t to, size_t len,
 
 		ret = do_write_oneword(map, &cfi->chips[chipnum],
 				ofs, tmp_buf);
-		if (ret) {
-			dri_unlock_flash();
+		if (ret)
 			return ret;
-		}
 
 		(*retlen) += len;
 	}
 
-	dri_unlock_flash();
 	return 0;
 }
 
@@ -1462,11 +1248,6 @@ static int __xipram do_write_buffer(struct map_info *map, struct flchip *chip,
 	int z, words;
 	map_word datum;
 
-	if (0 != dri_lock_flash_till_timeout()) {
-		printk("In Func: %s\n", __func__);
-		return -EIO;
-	}
-
 	adr += chip->start;
 	cmd_adr = adr;
 
@@ -1474,7 +1255,6 @@ static int __xipram do_write_buffer(struct map_info *map, struct flchip *chip,
 	ret = get_chip(map, chip, adr, FL_WRITING);
 	if (ret) {
 		spin_unlock(chip->mutex);
-		dri_unlock_flash();
 		return ret;
 	}
 
@@ -1563,7 +1343,6 @@ static int __xipram do_write_buffer(struct map_info *map, struct flchip *chip,
 	put_chip(map, chip, adr);
 	spin_unlock(chip->mutex);
 
-	dri_unlock_flash();
 	return ret;
 }
 
@@ -1578,16 +1357,9 @@ static int cfi_amdstd_write_buffers(struct mtd_info *mtd, loff_t to, size_t len,
 	int chipnum;
 	unsigned long ofs;
 
-	if (0 != dri_lock_flash_till_timeout()) {
-		printk("In Func: %s\n", __func__);
-		return -EIO;
-	}
-
 	*retlen = 0;
-	if (!len) {
-		dri_unlock_flash();
+	if (!len)
 		return 0;
-	}
 
 	chipnum = to >> cfi->chipshift;
 	ofs = to  - (chipnum << cfi->chipshift);
@@ -1599,10 +1371,8 @@ static int cfi_amdstd_write_buffers(struct mtd_info *mtd, loff_t to, size_t len,
 			local_len = len;
 		ret = cfi_amdstd_write_words(mtd, ofs + (chipnum<<cfi->chipshift),
 					     local_len, retlen, buf);
-		if (ret) {
-			dri_unlock_flash();
+		if (ret)
 			return ret;
-		}
 		ofs += local_len;
 		buf += local_len;
 		len -= local_len;
@@ -1610,10 +1380,8 @@ static int cfi_amdstd_write_buffers(struct mtd_info *mtd, loff_t to, size_t len,
 		if (ofs >> cfi->chipshift) {
 			chipnum ++;
 			ofs = 0;
-			if (chipnum == cfi->numchips) {
-				dri_unlock_flash();
+			if (chipnum == cfi->numchips)
 				return 0;
-			}
 		}
 	}
 
@@ -1629,10 +1397,8 @@ static int cfi_amdstd_write_buffers(struct mtd_info *mtd, loff_t to, size_t len,
 
 		ret = do_write_buffer(map, &cfi->chips[chipnum],
 				      ofs, buf, size);
-		if (ret) {
-			dri_unlock_flash();
+		if (ret)
 			return ret;
-		}
 
 		ofs += size;
 		buf += size;
@@ -1642,10 +1408,8 @@ static int cfi_amdstd_write_buffers(struct mtd_info *mtd, loff_t to, size_t len,
 		if (ofs >> cfi->chipshift) {
 			chipnum ++;
 			ofs = 0;
-			if (chipnum == cfi->numchips) {
-				dri_unlock_flash();
+			if (chipnum == cfi->numchips)
 				return 0;
-			}
 		}
 	}
 
@@ -1656,11 +1420,9 @@ static int cfi_amdstd_write_buffers(struct mtd_info *mtd, loff_t to, size_t len,
 					     len, &retlen_dregs, buf);
 
 		*retlen += retlen_dregs;
-		dri_unlock_flash();
 		return ret;
 	}
 
-	dri_unlock_flash();
 	return 0;
 }
 
@@ -1677,18 +1439,12 @@ static int __xipram do_erase_chip(struct map_info *map, struct flchip *chip)
 	DECLARE_WAITQUEUE(wait, current);
 	int ret = 0;
 
-	if (0 != dri_lock_flash_till_timeout()) {
-		printk("In Func: %s\n", __func__);
-		return -EIO;
-	}
-
 	adr = cfi->addr_unlock1;
 
 	spin_lock(chip->mutex);
 	ret = get_chip(map, chip, adr, FL_WRITING);
 	if (ret) {
 		spin_unlock(chip->mutex);
-		dri_unlock_flash();
 		return ret;
 	}
 
@@ -1760,7 +1516,6 @@ static int __xipram do_erase_chip(struct map_info *map, struct flchip *chip)
 	put_chip(map, chip, adr);
 	spin_unlock(chip->mutex);
 
-	dri_unlock_flash();
 	return ret;
 }
 
@@ -1772,18 +1527,12 @@ static int __xipram do_erase_oneblock(struct map_info *map, struct flchip *chip,
 	DECLARE_WAITQUEUE(wait, current);
 	int ret = 0;
 
-	if (0 != dri_lock_flash_till_timeout()) {
-		printk("In Func: %s\n", __func__);
-		return -EIO;
-	}
-
 	adr += chip->start;
 
 	spin_lock(chip->mutex);
 	ret = get_chip(map, chip, adr, FL_ERASING);
 	if (ret) {
 		spin_unlock(chip->mutex);
-		dri_unlock_flash();
 		return ret;
 	}
 
@@ -1849,14 +1598,13 @@ static int __xipram do_erase_oneblock(struct map_info *map, struct flchip *chip,
 		/* reset on all failures. */
 		map_write( map, CMD(0xF0), chip->start );
 		/* FIXME - should have reset delay before continuing */
-		printk("do_erase_oneblock: Erase failed: 0x%x\n", adr);
+
 		ret = -EIO;
 	}
 
 	chip->state = FL_READY;
 	put_chip(map, chip, adr);
 	spin_unlock(chip->mutex);
-	dri_unlock_flash();
 	return ret;
 }
 
@@ -1866,24 +1614,16 @@ int cfi_amdstd_erase_varsize(struct mtd_info *mtd, struct erase_info *instr)
 	unsigned long ofs, len;
 	int ret;
 
-	if (0 != dri_lock_flash_till_timeout()) {
-		printk("In Func: %s\n", __func__);
-		return -EIO;
-	}
-
 	ofs = instr->addr;
 	len = instr->len;
 
 	ret = cfi_varsize_frob(mtd, do_erase_oneblock, ofs, len, NULL);
-	if (ret) {
-		dri_unlock_flash();
+	if (ret)
 		return ret;
-	}
 
 	instr->state = MTD_ERASE_DONE;
 	mtd_erase_callback(instr);
 
-	dri_unlock_flash();
 	return 0;
 }
 
@@ -1894,31 +1634,19 @@ static int cfi_amdstd_erase_chip(struct mtd_info *mtd, struct erase_info *instr)
 	struct cfi_private *cfi = map->fldrv_priv;
 	int ret = 0;
 
-	if (0 != dri_lock_flash_till_timeout()) {
-		printk("In Func: %s\n", __func__);
-		return -EIO;
-	}
-
-	if (instr->addr != 0) {
-		dri_unlock_flash();
+	if (instr->addr != 0)
 		return -EINVAL;
-	}
 
-	if (instr->len != mtd->size) {
-		dri_unlock_flash();
+	if (instr->len != mtd->size)
 		return -EINVAL;
-	}
 
 	ret = do_erase_chip(map, &cfi->chips[0]);
-	if (ret) {
-		dri_unlock_flash();
+	if (ret)
 		return ret;
-	}
 
 	instr->state = MTD_ERASE_DONE;
 	mtd_erase_callback(instr);
 
-	dri_unlock_flash();
 	return 0;
 }
 
@@ -1927,11 +1655,6 @@ static int do_atmel_lock(struct map_info *map, struct flchip *chip,
 {
 	struct cfi_private *cfi = map->fldrv_priv;
 	int ret;
-
-	if (0 != dri_lock_flash_till_timeout()) {
-		printk("In Func: %s\n", __func__);
-		return -EIO;
-	}
 
 	spin_lock(chip->mutex);
 	ret = get_chip(map, chip, adr + chip->start, FL_LOCKING);
@@ -1960,7 +1683,6 @@ static int do_atmel_lock(struct map_info *map, struct flchip *chip,
 
 out_unlock:
 	spin_unlock(chip->mutex);
-	dri_unlock_flash();
 	return ret;
 }
 
@@ -1969,11 +1691,6 @@ static int do_atmel_unlock(struct map_info *map, struct flchip *chip,
 {
 	struct cfi_private *cfi = map->fldrv_priv;
 	int ret;
-
-	if (0 != dri_lock_flash_till_timeout()) {
-		printk("In Func: %s\n", __func__);
-		return -EIO;
-	}
 
 	spin_lock(chip->mutex);
 	ret = get_chip(map, chip, adr + chip->start, FL_UNLOCKING);
@@ -1994,7 +1711,6 @@ static int do_atmel_unlock(struct map_info *map, struct flchip *chip,
 
 out_unlock:
 	spin_unlock(chip->mutex);
-	dri_unlock_flash();
 	return ret;
 }
 

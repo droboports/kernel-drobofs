@@ -7,7 +7,7 @@
  *		2 of the License, or (at your option) any later version.
  *
  * Authors:	Thomas Graf <tgraf@suug.ch>
- * 		Pablo Neira Ayuso <pablo@netfilter.org>
+ * 		Pablo Neira Ayuso <pablo@eurodev.net>
  *
  * ==========================================================================
  *
@@ -250,8 +250,7 @@ unsigned int textsearch_find_continuous(struct ts_config *conf,
  *       the various search algorithms.
  *
  * Returns a new textsearch configuration according to the specified
- * parameters or a ERR_PTR(). If a zero length pattern is passed, this
- * function returns EINVAL.
+ *         parameters or a ERR_PTR().
  */
 struct ts_config *textsearch_prepare(const char *algo, const void *pattern,
 				     unsigned int len, gfp_t gfp_mask, int flags)
@@ -260,9 +259,6 @@ struct ts_config *textsearch_prepare(const char *algo, const void *pattern,
 	struct ts_config *conf;
 	struct ts_ops *ops;
 	
-	if (len == 0)
-		return ERR_PTR(-EINVAL);
-
 	ops = lookup_ts_algo(algo);
 #ifdef CONFIG_KMOD
 	/*

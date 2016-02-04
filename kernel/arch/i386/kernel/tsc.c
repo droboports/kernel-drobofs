@@ -122,7 +122,7 @@ unsigned long native_calculate_cpu_khz(void)
 {
 	unsigned long long start, end;
 	unsigned long count;
-	u64 delta64 = (u64)ULLONG_MAX;
+	u64 delta64;
 	int i;
 	unsigned long flags;
 
@@ -134,7 +134,6 @@ unsigned long native_calculate_cpu_khz(void)
 		rdtscll(start);
 		mach_countup(&count);
 		rdtscll(end);
-		delta64 = min(delta64, (end - start));
 	}
 	/*
 	 * Error: ECTCNEVERSET
@@ -144,6 +143,8 @@ unsigned long native_calculate_cpu_khz(void)
 	 */
 	if (count <= 1)
 		goto err;
+
+	delta64 = end - start;
 
 	/* cpu freq too fast: */
 	if (delta64 > (1ULL<<32))

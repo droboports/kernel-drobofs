@@ -1,6 +1,7 @@
-/* memctrlr.c: Driver for UltraSPARC-III memory controller.
+/* $Id: chmc.c,v 1.4 2002/01/08 16:00:14 davem Exp $
+ * memctrlr.c: Driver for UltraSPARC-III memory controller.
  *
- * Copyright (C) 2001, 2007 David S. Miller (davem@davemloft.net)
+ * Copyright (C) 2001 David S. Miller (davem@redhat.com)
  */
 
 #include <linux/module.h>
@@ -15,7 +16,6 @@
 #include <linux/init.h>
 #include <asm/spitfire.h>
 #include <asm/chmctrl.h>
-#include <asm/cpudata.h>
 #include <asm/oplib.h>
 #include <asm/prom.h>
 #include <asm/io.h>
@@ -242,11 +242,8 @@ int chmc_getunumber(int syndrome_code,
  */
 static u64 read_mcreg(struct mctrl_info *mp, unsigned long offset)
 {
-	unsigned long ret, this_cpu;
-
-	preempt_disable();
-
-	this_cpu = real_hard_smp_processor_id();
+	unsigned long ret;
+	int this_cpu = get_cpu();
 
 	if (mp->portid == this_cpu) {
 		__asm__ __volatile__("ldxa	[%1] %2, %0"
@@ -258,8 +255,7 @@ static u64 read_mcreg(struct mctrl_info *mp, unsigned long offset)
 				     : "r" (mp->regs + offset),
 				       "i" (ASI_PHYS_BYPASS_EC_E));
 	}
-
-	preempt_enable();
+	put_cpu();
 
 	return ret;
 }

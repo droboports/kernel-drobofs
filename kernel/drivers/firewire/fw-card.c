@@ -507,11 +507,9 @@ fw_core_remove_card(struct fw_card *card)
 	/* Set up the dummy driver. */
 	card->driver = &dummy_driver;
 
-	fw_destroy_nodes(card);
-	flush_scheduled_work();
-
 	fw_flush_transactions(card);
-	del_timer_sync(&card->flush_timer);
+
+	fw_destroy_nodes(card);
 
 	fw_card_put(card);
 }

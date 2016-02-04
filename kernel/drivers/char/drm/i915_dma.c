@@ -184,8 +184,6 @@ static int i915_initialize(drm_device_t * dev,
 	 * private backbuffer/depthbuffer usage.
 	 */
 	dev_priv->use_mi_batchbuffer_start = 0;
-	if (IS_I965G(dev)) /* 965 doesn't support older method */
-		dev_priv->use_mi_batchbuffer_start = 1;
 
 	/* Allow hardware batchbuffers unless told otherwise.
 	 */
@@ -519,13 +517,8 @@ static int i915_dispatch_batchbuffer(drm_device_t * dev,
 
 		if (dev_priv->use_mi_batchbuffer_start) {
 			BEGIN_LP_RING(2);
-			if (IS_I965G(dev)) {
-				OUT_RING(MI_BATCH_BUFFER_START | (2 << 6) | MI_BATCH_NON_SECURE_I965);
-				OUT_RING(batch->start);
-			} else {
-				OUT_RING(MI_BATCH_BUFFER_START | (2 << 6));
-				OUT_RING(batch->start | MI_BATCH_NON_SECURE);
-			}
+			OUT_RING(MI_BATCH_BUFFER_START | (2 << 6));
+			OUT_RING(batch->start | MI_BATCH_NON_SECURE);
 			ADVANCE_LP_RING();
 		} else {
 			BEGIN_LP_RING(4);
@@ -742,8 +735,7 @@ static int i915_setparam(DRM_IOCTL_ARGS)
 
 	switch (param.param) {
 	case I915_SETPARAM_USE_MI_BATCHBUFFER_START:
-		if (!IS_I965G(dev))
-			dev_priv->use_mi_batchbuffer_start = param.value;
+		dev_priv->use_mi_batchbuffer_start = param.value;
 		break;
 	case I915_SETPARAM_TEX_LRU_LOG_GRANULARITY:
 		dev_priv->tex_lru_log_granularity = param.value;

@@ -324,23 +324,6 @@ static void acpi_state_timer_broadcast(struct acpi_processor *pr,
 
 #endif
 
-/*
- * Suspend / resume control
- */
-static int acpi_idle_suspend;
-
-int acpi_processor_suspend(struct acpi_device * device, pm_message_t state)
-{
-	acpi_idle_suspend = 1;
-	return 0;
-}
-
-int acpi_processor_resume(struct acpi_device * device)
-{
-	acpi_idle_suspend = 0;
-	return 0;
-}
-
 static void acpi_processor_idle(void)
 {
 	struct acpi_processor *pr = NULL;
@@ -371,7 +354,7 @@ static void acpi_processor_idle(void)
 	}
 
 	cx = pr->power.state;
-	if (!cx || acpi_idle_suspend) {
+	if (!cx) {
 		if (pm_idle_save)
 			pm_idle_save();
 		else

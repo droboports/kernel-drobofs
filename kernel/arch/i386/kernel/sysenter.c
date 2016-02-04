@@ -336,9 +336,7 @@ struct vm_area_struct *get_gate_vma(struct task_struct *tsk)
 
 int in_gate_area(struct task_struct *task, unsigned long addr)
 {
-	const struct vm_area_struct *vma = get_gate_vma(task);
-
-	return vma && addr >= vma->vm_start && addr < vma->vm_end;
+	return 0;
 }
 
 int in_gate_area_no_task(unsigned long addr)
